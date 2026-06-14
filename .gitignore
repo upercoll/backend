@@ -1,0 +1,13 @@
+node_modules/
+.env
+*.log
+logs/
+dist/
+.DS_Store
+
+# Replit
+.replit
+replit.nix
+.cache/
+.local/
+.agents/

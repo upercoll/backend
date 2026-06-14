@@ -1,0 +1,110 @@
+const express = require("express");
+const router = express.Router();
+const { upload } = require("../config/cloudinary");
+const { panelAuth, requirePermission, ownerOnly } = require("../middleware/panelAuth");
+
+const panelAuthCtrl = require("../controllers/panelAuthController");
+const rolesCtrl = require("../controllers/rolesController");
+const teamCtrl = require("../controllers/teamController");
+const analyticsCtrl = require("../controllers/analyticsController");
+const siteContentCtrl = require("../controllers/siteContentController");
+const gamesCtrl = require("../controllers/gamesController");
+const proofCtrl = require("../controllers/proofController");
+const agentStatsCtrl = require("../controllers/agentStatsController");
+const uploadCtrl = require("../controllers/uploadController");
+const profileCtrl = require("../controllers/profileController");
+const panelOrdersCtrl = require("../controllers/panelOrdersController");
+const categoryCtrl = require("../controllers/categoryController");
+const productCtrl = require("../controllers/productController");
+const promoCtrl = require("../controllers/promoController");
+const settingsCtrl = require("../controllers/settingsController");
+
+router.post("/auth/owner-login", panelAuthCtrl.ownerLogin);
+router.post("/auth/member-login", panelAuthCtrl.memberLogin);
+router.get("/auth/invite/:token", panelAuthCtrl.validateInviteToken);
+router.post("/auth/invite/:token/send-code", panelAuthCtrl.sendVerificationCode);
+router.post("/auth/invite/:token/verify", panelAuthCtrl.verifyCodeAndActivate);
+
+router.use(panelAuth);
+
+router.get("/auth/me", panelAuthCtrl.me);
+router.post("/auth/logout", panelAuthCtrl.logout);
+
+router.get("/profile", profileCtrl.getProfile);
+router.patch("/profile", profileCtrl.updateProfile);
+router.post("/profile/picture", upload.single("image"), profileCtrl.uploadProfilePicture);
+router.patch("/profile/password", profileCtrl.changePassword);
+
+router.get("/analytics/dashboard", requirePermission("view_analytics"), analyticsCtrl.getDashboard);
+router.get("/analytics/revenue", requirePermission("view_analytics"), analyticsCtrl.getRevenueChart);
+router.get("/analytics/by-game", requirePermission("view_analytics"), analyticsCtrl.getOrdersByGame);
+router.get("/analytics/top-products", requirePermission("view_analytics"), analyticsCtrl.getTopProducts);
+router.get("/analytics/claims", requirePermission("view_analytics"), analyticsCtrl.getClaimStats);
+
+router.get("/roles/permissions", requirePermission("manage_roles"), rolesCtrl.getPermissions);
+router.get("/roles", requirePermission("manage_roles"), rolesCtrl.listRoles);
+router.get("/roles/:id", requirePermission("manage_roles"), rolesCtrl.getRole);
+router.post("/roles", requirePermission("manage_roles"), rolesCtrl.createRole);
+router.patch("/roles/:id", requirePermission("manage_roles"), rolesCtrl.updateRole);
+router.delete("/roles/:id", requirePermission("manage_roles"), rolesCtrl.deleteRole);
+
+router.get("/team", requirePermission("manage_team"), teamCtrl.listMembers);
+router.get("/team/:id", requirePermission("manage_team"), teamCtrl.getMember);
+router.post("/team/invite", requirePermission("manage_team"), teamCtrl.inviteMember);
+router.patch("/team/:id", requirePermission("manage_team"), teamCtrl.updateMember);
+router.delete("/team/:id", requirePermission("manage_team"), teamCtrl.removeMember);
+router.post("/team/:id/resend-invite", requirePermission("manage_team"), teamCtrl.resendInvite);
+
+router.get("/orders", requirePermission("manage_orders"), panelOrdersCtrl.listOrders);
+router.get("/orders/:id", requirePermission("manage_orders"), panelOrdersCtrl.getOrder);
+router.patch("/orders/:id/status", requirePermission("manage_orders"), panelOrdersCtrl.updateOrderStatus);
+router.get("/orders/:orderId/claim-chat", requirePermission("manage_orders"), panelOrdersCtrl.getClaimChat);
+
+router.get("/games", gamesCtrl.listGames);
+router.get("/games/:slug", gamesCtrl.getGame);
+router.post("/games", requirePermission("manage_games"), upload.fields([{ name: "image", maxCount: 1 }, { name: "banner", maxCount: 1 }]), gamesCtrl.createGame);
+router.patch("/games/:slug", requirePermission("manage_games"), upload.fields([{ name: "image", maxCount: 1 }, { name: "banner", maxCount: 1 }]), gamesCtrl.updateGame);
+router.delete("/games/:slug", requirePermission("manage_games"), gamesCtrl.deleteGame);
+
+router.get("/categories", requirePermission("manage_categories"), categoryCtrl.getAll);
+router.get("/categories/game/:game", categoryCtrl.getByGame);
+router.post("/categories", requirePermission("manage_categories"), categoryCtrl.create);
+router.patch("/categories/:id", requirePermission("manage_categories"), categoryCtrl.update);
+router.delete("/categories/:id", requirePermission("manage_categories"), categoryCtrl.delete);
+router.post("/categories/:id/subcategories", requirePermission("manage_categories"), categoryCtrl.addSubcategory);
+router.delete("/categories/:id/subcategories/:subId", requirePermission("manage_categories"), categoryCtrl.removeSubcategory);
+
+router.get("/products", requirePermission("manage_products"), productCtrl.getAll);
+router.get("/products/:id", requirePermission("manage_products"), productCtrl.getOne);
+router.post("/products", requirePermission("manage_products"), upload.array("images", 10), productCtrl.create);
+router.patch("/products/:id", requirePermission("manage_products"), upload.array("images", 10), productCtrl.update);
+router.delete("/products/:id", requirePermission("manage_products"), productCtrl.delete);
+
+router.get("/site-content", requirePermission("edit_site_content"), siteContentCtrl.getAllContent);
+router.get("/site-content/section/:section", requirePermission("edit_site_content"), siteContentCtrl.getSection);
+router.patch("/site-content/:key", requirePermission("edit_site_content"), siteContentCtrl.updateContent);
+router.post("/site-content/bulk-update", requirePermission("edit_site_content"), siteContentCtrl.bulkUpdate);
+router.post("/site-content/:key/reset", requirePermission("edit_site_content"), ownerOnly, siteContentCtrl.resetToDefault);
+
+router.get("/proof", requirePermission("view_pod"), proofCtrl.listProofs);
+router.get("/proof/:id", requirePermission("view_pod"), proofCtrl.getProof);
+router.patch("/proof/:id/notes", ownerOnly, proofCtrl.addOwnerNotes);
+router.post("/proof/submit", requirePermission("claim_agent"), upload.single("proof"), proofCtrl.submitProof);
+
+router.get("/agent-stats", requirePermission("monitor_agents"), agentStatsCtrl.getAllAgentStats);
+router.get("/agent-stats/me", requirePermission("claim_agent"), agentStatsCtrl.getMyStats);
+router.get("/agent-stats/:id", requirePermission("monitor_agents"), agentStatsCtrl.getAgentDetail);
+
+router.get("/promos", requirePermission("manage_promos"), promoCtrl.getAll);
+router.post("/promos", requirePermission("manage_promos"), promoCtrl.create);
+router.patch("/promos/:id", requirePermission("manage_promos"), promoCtrl.update);
+router.delete("/promos/:id", requirePermission("manage_promos"), promoCtrl.delete);
+
+router.post("/upload/single", ownerOnly, upload.single("file"), uploadCtrl.uploadSingle);
+router.post("/upload/multiple", ownerOnly, upload.array("files", 20), uploadCtrl.uploadMultiple);
+router.delete("/upload", ownerOnly, uploadCtrl.deleteImage);
+
+router.get("/settings", ownerOnly, settingsCtrl.getSettings);
+router.patch("/settings", ownerOnly, settingsCtrl.updateSettings);
+
+module.exports = router;

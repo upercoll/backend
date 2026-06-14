@@ -1,0 +1,225 @@
+const { v4: uuidv4 } = require("uuid");
+const ClaimSession = require("../models/ClaimSession");
+const AppError = require("../utils/AppError");
+const catchAsync = require("../utils/catchAsync");
+const logger = require("../utils/logger");
+
+function tryGetIO() {
+  try {
+    return require("../config/socket").getIO();
+  } catch {
+    return null;
+  }
+}
+
+exports.createClaim = catchAsync(async (req, res, next) => {
+  const { robloxUsername, contactEmail, orderRef, game, items, itemName } = req.body;
+
+  if (!robloxUsername?.trim()) return next(new AppError("Roblox username is required", 400));
+  if (!contactEmail?.includes("@")) return next(new AppError("Valid contact email is required", 400));
+
+  const roomId = uuidv4();
+
+  const session = await ClaimSession.create({
+    roomId,
+    robloxUsername: robloxUsername.trim(),
+    contactEmail: contactEmail.trim().toLowerCase(),
+    orderRef: orderRef?.trim() || null,
+    game: game?.trim() || null,
+    itemName: itemName?.trim() || null,
+    items: Array.isArray(items) ? items : [],
+    messages: [
+      {
+        sender: "system",
+        text: `${robloxUsername.trim()} has joined the chat`,
+        senderName: "System",
+      },
+    ],
+  });
+
+  const io = tryGetIO();
+  if (io) {
+    io.to("admin-room").emit("admin:new_claim", {
+      roomId: session.roomId,
+      robloxUsername: session.robloxUsername,
+      contactEmail: session.contactEmail,
+      game: session.game,
+      orderRef: session.orderRef,
+      itemName: session.itemName,
+      items: session.items,
+      createdAt: session.createdAt,
+    });
+  }
+
+  logger.info(`New claim session: ${roomId} for ${robloxUsername} — item: ${itemName || "general"}`);
+
+  res.status(201).json({
+    success: true,
+    data: {
+      roomId: session.roomId,
+      status: session.status,
+      messages: session.messages,
+    },
+  });
+});
+
+exports.updateUserInfo = catchAsync(async (req, res, next) => {
+  const { robloxUsername, contactEmail } = req.body;
+  const session = await ClaimSession.findOne({ roomId: req.params.roomId });
+
+  if (!session) return next(new AppError("Session not found", 404));
+  if (session.status !== "pending") {
+    return next(new AppError("Cannot update info after agent has joined", 400));
+  }
+
+  const changes = [];
+
+  if (robloxUsername?.trim() && robloxUsername.trim() !== session.robloxUsername) {
+    const oldName = session.robloxUsername;
+    const newName = robloxUsername.trim();
+    session.robloxUsername = newName;
+    changes.push(`${oldName} changed their Roblox username to ${newName}`);
+  }
+
+  if (
+    contactEmail?.trim() &&
+    contactEmail.includes("@") &&
+    contactEmail.trim().toLowerCase() !== session.contactEmail
+  ) {
+    const newEmail = contactEmail.trim().toLowerCase();
+    session.contactEmail = newEmail;
+    changes.push(`User updated their contact email to ${newEmail}`);
+  }
+
+  if (changes.length === 0) {
+    return res.json({ success: true, message: "No changes made" });
+  }
+
+  for (const text of changes) {
+    session.messages.push({ sender: "system", text, senderName: "System" });
+  }
+
+  await session.save();
+
+  const io = tryGetIO();
+  if (io) {
+    for (const text of changes) {
+      io.to(`claim:${session.roomId}`).emit("claim:new_message", {
+        sender: "system",
+        text,
+        senderName: "System",
+        timestamp: new Date(),
+        roomId: session.roomId,
+      });
+    }
+    io.to("admin-room").emit("admin:claim_user_info_updated", {
+      roomId: session.roomId,
+      robloxUsername: session.robloxUsername,
+      contactEmail: session.contactEmail,
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      robloxUsername: session.robloxUsername,
+      contactEmail: session.contactEmail,
+    },
+  });
+});
+
+exports.getSession = catchAsync(async (req, res, next) => {
+  const session = await ClaimSession.findOne({ roomId: req.params.roomId }).select("-__v");
+  if (!session) return next(new AppError("Session not found", 404));
+
+  res.json({
+    success: true,
+    data: {
+      roomId: session.roomId,
+      status: session.status,
+      assignedAgent: session.assignedAgent,
+      messages: session.messages,
+    },
+  });
+});
+
+exports.listClaims = catchAsync(async (req, res) => {
+  const { status, page = 1, limit = 30 } = req.query;
+  const filter = {};
+  if (status) filter.status = status;
+
+  const sessions = await ClaimSession.find(filter)
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(Number(limit))
+    .select("-messages -__v");
+
+  const total = await ClaimSession.countDocuments(filter);
+  res.json({ success: true, total, data: sessions });
+});
+
+exports.getFullSession = catchAsync(async (req, res, next) => {
+  const session = await ClaimSession.findOne({ roomId: req.params.roomId });
+  if (!session) return next(new AppError("Session not found", 404));
+  res.json({ success: true, data: session });
+});
+
+exports.updateStatus = catchAsync(async (req, res, next) => {
+  const { status, agentName } = req.body;
+  const allowed = ["active", "claimed", "ended"];
+  if (!allowed.includes(status)) return next(new AppError(`Status must be one of: ${allowed.join(", ")}`, 400));
+
+  const session = await ClaimSession.findOne({ roomId: req.params.roomId });
+  if (!session) return next(new AppError("Session not found", 404));
+
+  session.status = status;
+  if (status === "active" && agentName) {
+    session.assignedAgent = {
+      userId: req.user?._id || null,
+      name: agentName || req.user?.name || "Support Agent",
+      joinedAt: new Date(),
+    };
+  }
+  if (status === "claimed" || status === "ended") {
+    session.resolvedAt = new Date();
+  }
+
+  await session.save();
+
+  const io = tryGetIO();
+  if (io) {
+    if (status === "active") {
+      const n = agentName || req.user?.name || "Support Agent";
+      io.to(`claim:${session.roomId}`).emit("claim:agent_joined", {
+        agentName: n,
+        message: `${n} has joined the chat`,
+      });
+    }
+    if (status === "ended") {
+      io.to(`claim:${session.roomId}`).emit("claim:ended", {
+        message: "The support agent has ended the chat. Thank you!",
+      });
+    }
+    if (status === "claimed") {
+      io.to(`claim:${session.roomId}`).emit("claim:marked_claimed", {
+        message: "Your order has been delivered!",
+      });
+    }
+  }
+
+  res.json({ success: true, data: { status: session.status, assignedAgent: session.assignedAgent } });
+});
+
+exports.submitFeedback = catchAsync(async (req, res, next) => {
+  const { rating, comment } = req.body;
+  if (!rating || rating < 1 || rating > 5) return next(new AppError("Rating must be 1-5", 400));
+
+  const session = await ClaimSession.findOneAndUpdate(
+    { roomId: req.params.roomId, status: { $in: ["claimed", "ended"] } },
+    { feedback: { rating, comment: comment?.slice(0, 500), submittedAt: new Date() } },
+    { new: true }
+  );
+
+  if (!session) return next(new AppError("Session not found or not yet ended", 400));
+  res.json({ success: true, message: "Feedback submitted. Thank you!" });
+});

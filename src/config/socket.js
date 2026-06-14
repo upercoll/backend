@@ -1,0 +1,519 @@
+const { Server } = require("socket.io");
+const jwt = require("jsonwebtoken");
+const ChatMessage = require("../models/ChatMessage");
+const ClaimSession = require("../models/ClaimSession");
+const AgentStats = require("../models/AgentStats");
+const logger = require("../utils/logger");
+
+let io;
+
+const agentQueues = new Map();
+const claimRouting = new Map();
+const agentSockets = new Map();
+
+const CLAIM_TIMEOUT_MS = 30000;
+
+function getAgentsForGame(game) {
+  return agentQueues.get(game) || [];
+}
+
+function routeClaimToNextAgent(roomId, sessionData) {
+  const routing = claimRouting.get(roomId);
+  if (!routing) return;
+
+  if (routing.timeout) clearTimeout(routing.timeout);
+
+  if (routing.currentIdx >= routing.agents.length) {
+    claimRouting.delete(roomId);
+    logger.info(`No agents available for claim ${roomId}`);
+    return;
+  }
+
+  const targetSocketId = routing.agents[routing.currentIdx];
+  const targetSocket = io.sockets.sockets.get(targetSocketId);
+
+  if (!targetSocket) {
+    routing.currentIdx++;
+    routeClaimToNextAgent(roomId, sessionData);
+    return;
+  }
+
+  targetSocket.emit("queue:claim_popup", { ...sessionData, roomId });
+
+  routing.timeout = setTimeout(() => {
+    logger.info(`Claim ${roomId} timed out for agent ${targetSocketId}`);
+    routing.currentIdx++;
+    AgentStats.findOneAndUpdate(
+      { agentId: targetSocket.panelUserId },
+      { $inc: { timedOutClaims: 1 } },
+      { upsert: true }
+    ).catch(() => {});
+    routeClaimToNextAgent(roomId, sessionData);
+  }, CLAIM_TIMEOUT_MS);
+}
+
+function initSocket(server) {
+  io = new Server(server, {
+    cors: {
+      origin: [
+        process.env.FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:5000",
+      ].filter(Boolean),
+      credentials: true,
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000,
+  });
+
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (token) {
+      try {
+        socket.user = jwt.verify(token, process.env.JWT_SECRET);
+      } catch {}
+    }
+    next();
+  });
+
+  io.on("connection", (socket) => {
+    const sessionId = socket.handshake.query.sessionId || socket.id;
+    logger.info(`Socket connected: ${sessionId}`);
+
+    socket.join(`session:${sessionId}`);
+
+    if (socket.user?.role === "admin" || socket.user?.type === "owner") {
+      socket.join("admin-room");
+      logger.info(`Admin joined admin-room: ${socket.user.email}`);
+    }
+
+    socket.on("user:message", async (data) => {
+      try {
+        const msg = await ChatMessage.create({
+          sessionId,
+          sender: "user",
+          text: data.text?.slice(0, 1000),
+          userName: data.userName || "User",
+          read: false,
+        });
+        io.to("admin-room").emit("admin:new_message", { ...msg.toObject(), socketId: socket.id });
+        socket.emit("user:message_saved", msg.toObject());
+      } catch (err) {
+        logger.error("user:message error:", err);
+        socket.emit("error", { message: "Failed to send message" });
+      }
+    });
+
+    socket.on("admin:reply", async (data) => {
+      if (socket.user?.role !== "admin" && socket.user?.type !== "owner") return;
+      try {
+        const msg = await ChatMessage.create({
+          sessionId: data.sessionId,
+          sender: "admin",
+          text: data.text?.slice(0, 1000),
+          userName: "RBstars Support",
+          read: true,
+        });
+        io.to(`session:${data.sessionId}`).emit("user:admin_reply", msg.toObject());
+        io.to("admin-room").emit("admin:reply_sent", msg.toObject());
+      } catch (err) {
+        logger.error("admin:reply error:", err);
+      }
+    });
+
+    socket.on("admin:mark_read", async ({ sessionId: sid }) => {
+      if (socket.user?.role !== "admin" && socket.user?.type !== "owner") return;
+      await ChatMessage.updateMany({ sessionId: sid, read: false }, { read: true });
+      io.to("admin-room").emit("admin:session_read", { sessionId: sid });
+    });
+
+    socket.on("user:typing", () => {
+      io.to("admin-room").emit("admin:user_typing", { sessionId });
+    });
+
+    socket.on("admin:typing", (data) => {
+      if (socket.user?.role !== "admin" && socket.user?.type !== "owner") return;
+      io.to(`session:${data.sessionId}`).emit("user:admin_typing");
+    });
+
+    socket.on("claim:join", async ({ roomId }) => {
+      if (!roomId) return;
+      socket.join(`claim:${roomId}`);
+      socket.claimRoomId = roomId;
+      logger.info(`Customer joined claim room: ${roomId}`);
+    });
+
+    socket.on("claim:agent_join", async ({ roomId, agentName }) => {
+      if (!roomId) return;
+      socket.join(`claim:${roomId}`);
+      socket.claimRoomId = roomId;
+
+      const displayName = agentName || socket.user?.name || "Support Agent";
+
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session) return;
+
+        if (session.status === "pending") {
+          session.status = "active";
+          session.assignedAgent = {
+            userId: socket.user?._id || socket.panelUserId || null,
+            name: displayName,
+            joinedAt: new Date(),
+          };
+          const joinMsg = {
+            sender: "system",
+            text: `${displayName} has joined the chat`,
+            senderName: "System",
+            timestamp: new Date(),
+          };
+          session.messages.push(joinMsg);
+          await session.save();
+
+          io.to(`claim:${roomId}`).emit("claim:agent_joined", {
+            agentName: displayName,
+            message: `${displayName} has joined the chat`,
+          });
+
+          io.to("admin-room").emit("admin:claim_status_changed", {
+            roomId,
+            status: "active",
+            agentName: displayName,
+          });
+        }
+      } catch (err) {
+        logger.error("claim:agent_join error:", err);
+      }
+    });
+
+    socket.on("claim:message", async ({ roomId, text, senderName, sender }) => {
+      if (!roomId || !text?.trim()) return;
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session || session.status === "ended") return;
+
+        const msgSender = sender === "agent" && (socket.user || socket.panelUserId) ? "agent" : "customer";
+        const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : "Customer");
+
+        const msg = {
+          sender: msgSender,
+          text: text.slice(0, 2000),
+          senderName: name,
+          timestamp: new Date(),
+        };
+
+        session.messages.push(msg);
+
+        if (msgSender === "agent" && !session.firstAgentReplyAt) {
+          session.firstAgentReplyAt = new Date();
+        }
+
+        await session.save();
+        const saved = session.messages[session.messages.length - 1];
+
+        io.to(`claim:${roomId}`).emit("claim:new_message", { ...saved.toObject(), roomId });
+
+        if (msgSender === "customer") {
+          io.to("admin-room").emit("admin:claim_message", {
+            roomId,
+            senderName: name,
+            text: text.slice(0, 100),
+          });
+        }
+      } catch (err) {
+        logger.error("claim:message error:", err);
+      }
+    });
+
+    socket.on("claim:typing", ({ roomId, senderName }) => {
+      if (!roomId) return;
+      socket.to(`claim:${roomId}`).emit("claim:typing", { senderName });
+    });
+
+    socket.on("claim:update_user_info", async ({ roomId, robloxUsername, contactEmail }) => {
+      if (!roomId) return;
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session || session.status !== "pending") return;
+
+        const changes = [];
+
+        if (robloxUsername?.trim() && robloxUsername.trim() !== session.robloxUsername) {
+          const oldName = session.robloxUsername;
+          session.robloxUsername = robloxUsername.trim();
+          changes.push(`${oldName} changed their Roblox username to ${robloxUsername.trim()}`);
+        }
+
+        if (
+          contactEmail?.trim() &&
+          contactEmail.includes("@") &&
+          contactEmail.trim().toLowerCase() !== session.contactEmail
+        ) {
+          const newEmail = contactEmail.trim().toLowerCase();
+          session.contactEmail = newEmail;
+          changes.push(`User updated their contact email to ${newEmail}`);
+        }
+
+        if (changes.length === 0) return;
+
+        for (const text of changes) {
+          session.messages.push({ sender: "system", text, senderName: "System" });
+        }
+        await session.save();
+
+        for (const text of changes) {
+          io.to(`claim:${roomId}`).emit("claim:new_message", {
+            sender: "system",
+            text,
+            senderName: "System",
+            timestamp: new Date(),
+            roomId,
+          });
+        }
+        io.to("admin-room").emit("admin:claim_user_info_updated", {
+          roomId,
+          robloxUsername: session.robloxUsername,
+          contactEmail: session.contactEmail,
+        });
+      } catch (err) {
+        logger.error("claim:update_user_info error:", err);
+      }
+    });
+
+    socket.on("claim:end", async ({ roomId }) => {
+      if (!roomId) return;
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session) return;
+        session.status = "ended";
+        session.resolvedAt = new Date();
+        session.messages.push({
+          sender: "system",
+          text: "The support agent has ended the chat. Thank you for your patience!",
+          senderName: "System",
+          timestamp: new Date(),
+        });
+        await session.save();
+
+        io.to(`claim:${roomId}`).emit("claim:ended", {
+          message: "The support agent has ended the chat. Thank you!",
+        });
+        io.to("admin-room").emit("admin:claim_status_changed", { roomId, status: "ended" });
+      } catch (err) {
+        logger.error("claim:end error:", err);
+      }
+    });
+
+    socket.on("claim:mark_claimed", async ({ roomId }) => {
+      if (!roomId) return;
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session) return;
+        session.status = "claimed";
+        session.resolvedAt = new Date();
+        session.messages.push({
+          sender: "system",
+          text: "Your order has been delivered! Items should be in your inventory.",
+          senderName: "System",
+          timestamp: new Date(),
+        });
+        await session.save();
+
+        io.to(`claim:${roomId}`).emit("claim:marked_claimed", {
+          message: "Your order has been delivered! Check your inventory.",
+        });
+        io.to("admin-room").emit("admin:claim_status_changed", { roomId, status: "claimed" });
+      } catch (err) {
+        logger.error("claim:mark_claimed error:", err);
+      }
+    });
+
+    socket.on("queue:join", ({ games, agentId, agentName }) => {
+      if (!Array.isArray(games)) return;
+
+      socket.panelUserId = agentId;
+      socket.agentName = agentName;
+      socket.join("agent-queue-room");
+
+      agentSockets.set(agentId, socket.id);
+
+      for (const game of games) {
+        if (!agentQueues.has(game)) agentQueues.set(game, []);
+        const queue = agentQueues.get(game);
+        if (!queue.includes(socket.id)) queue.push(socket.id);
+      }
+
+      AgentStats.findOneAndUpdate(
+        { agentId },
+        { isOnline: true, currentSessionStart: new Date(), lastSeen: new Date() },
+        { upsert: true }
+      ).catch(() => {});
+
+      io.to("admin-room").emit("admin:agent_online", { agentId, agentName, games });
+      logger.info(`Agent ${agentId} joined queue for games: ${games.join(", ")}`);
+    });
+
+    socket.on("queue:leave", ({ agentId }) => {
+      for (const [game, queue] of agentQueues.entries()) {
+        const idx = queue.indexOf(socket.id);
+        if (idx !== -1) queue.splice(idx, 1);
+      }
+      if (agentId) {
+        agentSockets.delete(agentId);
+        AgentStats.findOneAndUpdate(
+          { agentId },
+          { isOnline: false, lastSeen: new Date() },
+          { upsert: true }
+        ).catch(() => {});
+      }
+      io.to("admin-room").emit("admin:agent_offline", { agentId });
+    });
+
+    socket.on("queue:answer", async ({ roomId, agentId, agentName }) => {
+      const routing = claimRouting.get(roomId);
+      if (!routing) return;
+
+      if (routing.answeredBy) return;
+      routing.answeredBy = agentId;
+
+      if (routing.timeout) {
+        clearTimeout(routing.timeout);
+        routing.timeout = null;
+      }
+      claimRouting.delete(roomId);
+
+      socket.panelUserId = agentId;
+      socket.agentName = agentName;
+      socket.join(`claim:${roomId}`);
+      socket.claimRoomId = roomId;
+
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session) return;
+
+        if (session.status !== "pending") {
+          socket.emit("queue:already_taken", { roomId });
+          return;
+        }
+
+        session.status = "active";
+        session.assignedAgent = {
+          userId: agentId,
+          name: agentName || "Agent",
+          joinedAt: new Date(),
+        };
+        const joinMsg = {
+          sender: "system",
+          text: `${agentName || "Agent"} has joined the chat`,
+          senderName: "System",
+          timestamp: new Date(),
+        };
+        session.messages.push(joinMsg);
+        await session.save();
+
+        AgentStats.findOneAndUpdate(
+          { agentId },
+          { $inc: { totalClaims: 1 }, lastSeen: new Date() },
+          { upsert: true }
+        ).catch(() => {});
+
+        socket.emit("queue:claim_assigned", { roomId, session: session.toObject() });
+
+        io.to(`claim:${roomId}`).emit("claim:agent_joined", {
+          agentName: agentName || "Agent",
+          message: `${agentName || "Agent"} has joined the chat`,
+        });
+
+        io.to("admin-room").emit("admin:claim_status_changed", {
+          roomId,
+          status: "active",
+          agentName: agentName || "Agent",
+          agentId,
+        });
+      } catch (err) {
+        logger.error("queue:answer error:", err);
+      }
+    });
+
+    socket.on("queue:decline", ({ roomId, agentId }) => {
+      const routing = claimRouting.get(roomId);
+      if (!routing || routing.answeredBy) return;
+
+      if (routing.timeout) clearTimeout(routing.timeout);
+      routing.currentIdx++;
+
+      AgentStats.findOneAndUpdate(
+        { agentId },
+        { $inc: { declinedClaims: 1 } },
+        { upsert: true }
+      ).catch(() => {});
+
+      routeClaimToNextAgent(roomId, routing.sessionData);
+    });
+
+    socket.on("queue:new_claim_notify", async ({ game, sessionData }) => {
+      const agents = getAgentsForGame(game);
+      if (!agents.length) return;
+
+      const routing = { agents: [...agents], currentIdx: 0, timeout: null, sessionData, answeredBy: null };
+      claimRouting.set(sessionData.roomId, routing);
+      routeClaimToNextAgent(sessionData.roomId, sessionData);
+    });
+
+    socket.on("disconnect", () => {
+      logger.info(`Socket disconnected: ${sessionId}`);
+
+      for (const [game, queue] of agentQueues.entries()) {
+        const idx = queue.indexOf(socket.id);
+        if (idx !== -1) queue.splice(idx, 1);
+      }
+
+      if (socket.panelUserId) {
+        agentSockets.delete(socket.panelUserId);
+        AgentStats.findOneAndUpdate(
+          { agentId: socket.panelUserId },
+          { isOnline: false, lastSeen: new Date() },
+          { upsert: true }
+        ).catch(() => {});
+        io.to("admin-room").emit("admin:agent_offline", { agentId: socket.panelUserId });
+      }
+
+      if (!socket.user?.role && !socket.panelUserId) {
+        io.to("admin-room").emit("admin:user_offline", { sessionId });
+      }
+
+      if (socket.claimRoomId) {
+        io.to("admin-room").emit("admin:claim_customer_offline", { roomId: socket.claimRoomId });
+      }
+    });
+  });
+
+  return io;
+}
+
+function getIO() {
+  if (!io) throw new Error("Socket.io not initialised");
+  return io;
+}
+
+function notifyNewClaim(sessionData) {
+  if (!io) return;
+  const game = sessionData.game;
+  const agents = getAgentsForGame(game);
+
+  if (agents.length > 0) {
+    const routing = {
+      agents: [...agents],
+      currentIdx: 0,
+      timeout: null,
+      sessionData,
+      answeredBy: null,
+    };
+    claimRouting.set(sessionData.roomId, routing);
+    routeClaimToNextAgent(sessionData.roomId, sessionData);
+  }
+
+  io.to("admin-room").emit("admin:new_claim", sessionData);
+}
+
+module.exports = { initSocket, getIO, notifyNewClaim };
