@@ -109,5 +109,7 @@ router.patch("/settings", ownerOnly, settingsCtrl.updateSettings);
 
 const claimCtrl = require("../controllers/claimController");
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
+router.get("/claims/:roomId", requirePermission("monitor_agents"), claimCtrl.getSession);
+router.get("/claims/:roomId/full", requirePermission("monitor_agents"), claimCtrl.getFullSession);
 
 module.exports = router;
