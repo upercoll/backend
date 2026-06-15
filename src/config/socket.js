@@ -524,7 +524,20 @@ function getIO() {
 function notifyNewClaim(sessionData) {
   if (!io) return;
   const game = sessionData.game;
-  const agents = getAgentsForGame(game);
+
+  let agents = getAgentsForGame(game);
+
+  if (agents.length === 0) {
+    const seen = new Set();
+    const all = [];
+    for (const queue of agentQueues.values()) {
+      for (const id of queue) {
+        if (!seen.has(id)) { seen.add(id); all.push(id); }
+      }
+    }
+    agents = all;
+    logger.info(`No agents for game "${game}", falling back to all ${agents.length} available agents`);
+  }
 
   if (agents.length > 0) {
     const routing = {
@@ -536,6 +549,8 @@ function notifyNewClaim(sessionData) {
     };
     claimRouting.set(sessionData.roomId, routing);
     routeClaimToNextAgent(sessionData.roomId, sessionData);
+  } else {
+    logger.info(`No agents online for claim ${sessionData.roomId}`);
   }
 
   io.to("admin-room").emit("admin:new_claim", sessionData);
