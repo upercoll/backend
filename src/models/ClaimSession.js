@@ -55,6 +55,7 @@ const claimSessionSchema = new mongoose.Schema(
     feedback: {
       rating: { type: Number, min: 1, max: 5 },
       comment: String,
+      proofImageUrl: String,
       submittedAt: Date,
     },
   },
