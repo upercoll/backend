@@ -37,9 +37,9 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     ],
   });
 
-  const io = tryGetIO();
-  if (io) {
-    io.to("admin-room").emit("admin:new_claim", {
+  try {
+    const { notifyNewClaim } = require("../config/socket");
+    notifyNewClaim({
       roomId: session.roomId,
       robloxUsername: session.robloxUsername,
       contactEmail: session.contactEmail,
@@ -49,7 +49,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
       items: session.items,
       createdAt: session.createdAt,
     });
-  }
+  } catch {}
 
   logger.info(`New claim session: ${roomId} for ${robloxUsername} — item: ${itemName || "general"}`);
 
@@ -208,6 +208,14 @@ exports.updateStatus = catchAsync(async (req, res, next) => {
   }
 
   res.json({ success: true, data: { status: session.status, assignedAgent: session.assignedAgent } });
+});
+
+exports.getActiveClaims = catchAsync(async (req, res) => {
+  const sessions = await ClaimSession.find({ status: { $in: ["pending", "active"] } })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .select("-messages -__v");
+  res.json({ success: true, data: { sessions } });
 });
 
 exports.submitFeedback = catchAsync(async (req, res, next) => {
