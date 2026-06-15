@@ -2,6 +2,7 @@ const router = require("express").Router();
 const ctrl = require("../controllers/claimController");
 const { protect, adminOnly } = require("../middleware/auth");
 const rateLimit = require("express-rate-limit");
+const { upload } = require("../config/cloudinary");
 
 const claimCreateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -9,9 +10,11 @@ const claimCreateLimiter = rateLimit({
   message: { success: false, message: "Too many claim requests — please wait before trying again" },
 });
 
+router.get("/public-reviews", ctrl.getPublicReviews);
+
 router.post("/", claimCreateLimiter, ctrl.createClaim);
 router.get("/:roomId", ctrl.getSession);
-router.post("/:roomId/feedback", ctrl.submitFeedback);
+router.post("/:roomId/feedback", upload.single("proofImage"), ctrl.submitFeedback);
 router.patch("/:roomId/user-info", ctrl.updateUserInfo);
 
 router.get("/", protect, adminOnly, ctrl.listClaims);
