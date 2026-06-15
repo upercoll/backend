@@ -84,7 +84,7 @@ function initSocket(server) {
 
     socket.join(`session:${sessionId}`);
 
-    if (socket.user?.role === "admin" || socket.user?.type === "owner") {
+    if (socket.user?.role === "admin" || socket.user?.type === "owner" || socket.user?.isOwner === true) {
       socket.join("admin-room");
       logger.info(`Admin joined admin-room: ${socket.user.email}`);
     }
