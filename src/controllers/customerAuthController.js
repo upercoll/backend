@@ -1,19 +1,13 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const Customer = require("../models/Customer");
 const AppError = require("../utils/AppError");
 
-function getTransport() {
-  if (process.env.SMTP_HOST) {
-    return nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: process.env.SMTP_SECURE === "true",
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-  }
-  return null;
+const FROM = process.env.RESEND_FROM || "RBstars <noreply@rbstars.gg>";
+
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
 }
 
 function generate6DigitCode() {
@@ -21,13 +15,13 @@ function generate6DigitCode() {
 }
 
 async function sendVerificationEmail(email, displayName, code) {
-  const transport = getTransport();
-  if (!transport) {
+  if (!process.env.RESEND_API_KEY) {
     console.log(`[DEV] Verification code for ${email}: ${code}`);
     return;
   }
-  await transport.sendMail({
-    from: process.env.SMTP_FROM || `"RBstars" <no-reply@rbstars.com>`,
+  const resend = getResend();
+  await resend.emails.send({
+    from: FROM,
     to: email,
     subject: "Verify your RBstars account",
     html: `
