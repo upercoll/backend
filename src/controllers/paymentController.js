@@ -144,13 +144,10 @@ exports.createPaymentIntent = catchAsync(async (req, res, next) => {
     userAgent: req.headers["user-agent"],
   });
 
-  const intent = await stripe.paymentIntents.create({
+  const intentParams = {
     amount: Math.round(total * 100),
     currency: "usd",
-    payment_method: paymentMethodId,
     confirm: false,
-    automatic_payment_methods: { enabled: false },
-    payment_method_types: ["card"],
     metadata: {
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,
@@ -159,7 +156,17 @@ exports.createPaymentIntent = catchAsync(async (req, res, next) => {
     },
     receipt_email: customer.email,
     description: `RBstars order ${order.orderNumber}`,
-  });
+  };
+
+  if (paymentMethodId) {
+    intentParams.payment_method = paymentMethodId;
+    intentParams.automatic_payment_methods = { enabled: false };
+    intentParams.payment_method_types = ["card"];
+  } else {
+    intentParams.automatic_payment_methods = { enabled: true };
+  }
+
+  const intent = await stripe.paymentIntents.create(intentParams);
 
   order.payment.stripePaymentIntentId = intent.id;
   await order.save();
