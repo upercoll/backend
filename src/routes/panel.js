@@ -107,4 +107,7 @@ router.delete("/upload", ownerOnly, uploadCtrl.deleteImage);
 router.get("/settings", ownerOnly, settingsCtrl.getSettings);
 router.patch("/settings", ownerOnly, settingsCtrl.updateSettings);
 
+const claimCtrl = require("../controllers/claimController");
+router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
+
 module.exports = router;
