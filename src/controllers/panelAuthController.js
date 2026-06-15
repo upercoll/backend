@@ -180,7 +180,14 @@ exports.verifyCodeAndActivate = catchAsync(async (req, res, next) => {
     success: true,
     token: panelToken,
     data: {
-      user: { id: member._id, email: member.email, type: "team_member" },
+      user: {
+        id: member._id,
+        email: member.email,
+        type: "team_member",
+        isOwner: false,
+        permissions: populatedMember.role.permissions || [],
+        claimGames: member.claimGames || [],
+      },
       role: populatedMember.role,
       permissions: populatedMember.role.permissions,
       profile: profile.toObject(),
