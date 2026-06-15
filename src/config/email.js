@@ -17,7 +17,7 @@ function getTransporter() {
   return transporter;
 }
 
-const FROM = `RBstars Admin <${process.env.SMTP_FROM || process.env.SMTP_USER}>`;
+const FROM = process.env.SMTP_FROM || process.env.SMTP_USER;
 
 async function sendInviteEmail({ to, inviteUrl, roleName, inviterName }) {
   try {
