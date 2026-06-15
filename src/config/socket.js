@@ -3,6 +3,8 @@ const jwt = require("jsonwebtoken");
 const ChatMessage = require("../models/ChatMessage");
 const ClaimSession = require("../models/ClaimSession");
 const AgentStats = require("../models/AgentStats");
+const AdminProfile = require("../models/AdminProfile");
+const { sendAgentReplyNotificationEmail } = require("./email");
 const logger = require("../utils/logger");
 
 let io;
@@ -204,7 +206,8 @@ function initSocket(server) {
 
         session.messages.push(msg);
 
-        if (msgSender === "agent" && !session.firstAgentReplyAt) {
+        const isFirstAgentReply = msgSender === "agent" && !session.firstAgentReplyAt;
+        if (isFirstAgentReply) {
           session.firstAgentReplyAt = new Date();
         }
 
@@ -219,6 +222,28 @@ function initSocket(server) {
             senderName: name,
             text: text.slice(0, 100),
           });
+        }
+
+        if (isFirstAgentReply) {
+          try {
+            const agentUserId = session.assignedAgent?.userId || socket.panelUserId || null;
+            let agentProfile = null;
+            if (agentUserId) {
+              agentProfile = await AdminProfile.findOne({ memberId: agentUserId });
+            }
+            const frontendUrl = process.env.FRONTEND_URL || "https://rbstars.gg";
+            sendAgentReplyNotificationEmail({
+              to: session.contactEmail,
+              orderRef: session.orderRef || null,
+              agentName: session.assignedAgent?.name || name,
+              agentPicture: agentProfile?.profilePicture || null,
+              agentBio: agentProfile?.bio || null,
+              roomId: session.roomId,
+              frontendUrl,
+            }).catch((emailErr) => logger.warn("Agent reply email failed:", emailErr.message));
+          } catch (emailErr) {
+            logger.warn("Failed to trigger agent reply email:", emailErr.message);
+          }
         }
       } catch (err) {
         logger.error("claim:message error:", err);
