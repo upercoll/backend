@@ -1,27 +1,16 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const logger = require("../utils/logger");
 
-let transporter;
-
-function getTransporter() {
-  if (transporter) return transporter;
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || "587"),
-    secure: process.env.SMTP_SECURE === "true",
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-  return transporter;
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
 }
 
-const FROM = process.env.SMTP_FROM || process.env.SMTP_USER;
+const FROM = process.env.RESEND_FROM || "RBstars <noreply@rbstars.gg>";
 
 async function sendInviteEmail({ to, inviteUrl, roleName, inviterName }) {
   try {
-    await getTransporter().sendMail({
+    const resend = getResend();
+    await resend.emails.send({
       from: FROM,
       to,
       subject: `You've been invited to join RBstars Admin Panel`,
@@ -55,7 +44,8 @@ async function sendInviteEmail({ to, inviteUrl, roleName, inviterName }) {
 
 async function sendVerificationEmail({ to, code }) {
   try {
-    await getTransporter().sendMail({
+    const resend = getResend();
+    await resend.emails.send({
       from: FROM,
       to,
       subject: `RBstars Panel — Verification Code: ${code}`,
@@ -84,7 +74,8 @@ async function sendVerificationEmail({ to, code }) {
 
 async function sendPasswordEmail({ to, password, panelUrl }) {
   try {
-    await getTransporter().sendMail({
+    const resend = getResend();
+    await resend.emails.send({
       from: FROM,
       to,
       subject: `RBstars Panel — Your Temporary Password`,
