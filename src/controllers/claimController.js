@@ -220,14 +220,74 @@ exports.getActiveClaims = catchAsync(async (req, res) => {
 
 exports.submitFeedback = catchAsync(async (req, res, next) => {
   const { rating, comment } = req.body;
-  if (!rating || rating < 1 || rating > 5) return next(new AppError("Rating must be 1-5", 400));
+  const parsedRating = Number(rating);
+  if (!parsedRating || parsedRating < 1 || parsedRating > 5) {
+    return next(new AppError("Rating must be 1-5", 400));
+  }
+
+  let proofImageUrl = null;
+  if (req.file) {
+    try {
+      const { uploadToCloudinary } = require("../config/cloudinary");
+      const result = await uploadToCloudinary(req.file.buffer, { folder: "rbstars/reviews" });
+      proofImageUrl = result.secure_url;
+    } catch (err) {
+      logger.error("Failed to upload review proof image:", err);
+    }
+  }
+
+  const feedbackData = {
+    rating: parsedRating,
+    comment: comment ? String(comment).slice(0, 500) : undefined,
+    proofImageUrl: proofImageUrl || undefined,
+    submittedAt: new Date(),
+  };
 
   const session = await ClaimSession.findOneAndUpdate(
     { roomId: req.params.roomId, status: { $in: ["claimed", "ended"] } },
-    { feedback: { rating, comment: comment?.slice(0, 500), submittedAt: new Date() } },
+    { feedback: feedbackData },
     { new: true }
   );
 
   if (!session) return next(new AppError("Session not found or not yet ended", 400));
   res.json({ success: true, message: "Feedback submitted. Thank you!" });
+});
+
+exports.getPublicReviews = catchAsync(async (req, res) => {
+  const { limit = 30 } = req.query;
+
+  const sessions = await ClaimSession.find({
+    "feedback.rating": { $exists: true, $ne: null },
+    "feedback.comment": { $exists: true, $ne: "" },
+  })
+    .sort({ "feedback.submittedAt": -1 })
+    .limit(Math.min(Number(limit), 50))
+    .select("robloxUsername feedback");
+
+  const reviews = sessions.map(s => ({
+    id: s._id,
+    name: s.robloxUsername,
+    rating: s.feedback.rating,
+    comment: s.feedback.comment,
+    proofImageUrl: s.feedback.proofImageUrl || null,
+    submittedAt: s.feedback.submittedAt,
+  }));
+
+  const total = await ClaimSession.countDocuments({
+    "feedback.rating": { $exists: true, $ne: null },
+  });
+
+  const avgRating =
+    reviews.length > 0
+      ? Math.round((reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length) * 10) / 10
+      : 0;
+
+  res.json({
+    success: true,
+    data: {
+      reviews,
+      total,
+      averageRating: avgRating,
+    },
+  });
 });
