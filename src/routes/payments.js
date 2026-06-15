@@ -7,7 +7,6 @@ router.post("/webhook", ctrl.webhook);
 router.post("/create-intent", paymentLimiter, ctrl.createPaymentIntent);
 router.post("/confirm", paymentLimiter, ctrl.confirmPayment);
 
-router.post("/paypal/create", paymentLimiter, ctrl.createPaypalOrder);
-router.post("/paypal/capture", paymentLimiter, ctrl.capturePaypalPayment);
+router.post("/paypal-intent", paymentLimiter, ctrl.createPaypalPaymentIntent);
 
 module.exports = router;
