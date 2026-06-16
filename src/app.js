@@ -21,6 +21,7 @@ const claimRoutes = require("./routes/claims");
 const customerAuthRoutes = require("./routes/customerAuth");
 const panelRoutes = require("./routes/panel");
 const gamesRoutes = require("./routes/games");
+const collaboratorRoutes = require("./routes/collaborator");
 
 const app = express();
 
@@ -72,6 +73,7 @@ app.use("/api/claims", claimRoutes);
 app.use("/api/customer-auth", customerAuthRoutes);
 app.use("/api/panel", panelRoutes);
 app.use("/api/games", gamesRoutes);
+app.use("/api/collab", collaboratorRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
