@@ -218,6 +218,43 @@ exports.getActiveClaims = catchAsync(async (req, res) => {
   res.json({ success: true, data: { sessions } });
 });
 
+exports.getAgentQueue = catchAsync(async (req, res) => {
+  const panelUser = req.panelUser;
+  const agentId = panelUser?._id || panelUser?.id;
+  const agentGames = panelUser?.claimGames || [];
+
+  const pendingFilter = { status: "pending" };
+  if (agentGames.length > 0) {
+    pendingFilter.game = { $in: agentGames };
+  }
+
+  const [pending, mine, completed] = await Promise.all([
+    ClaimSession.find(pendingFilter)
+      .sort({ createdAt: 1 })
+      .limit(50)
+      .select("-__v"),
+    ClaimSession.find({
+      status: "active",
+      "assignedAgent.userId": agentId,
+    })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .select("-__v"),
+    ClaimSession.find({
+      status: { $in: ["claimed", "ended"] },
+      "assignedAgent.userId": agentId,
+    })
+      .sort({ resolvedAt: -1 })
+      .limit(30)
+      .select("-messages -__v"),
+  ]);
+
+  res.json({
+    success: true,
+    data: { pending, mine, completed },
+  });
+});
+
 exports.submitFeedback = catchAsync(async (req, res, next) => {
   const { rating, comment } = req.body;
   const parsedRating = Number(rating);
