@@ -320,6 +320,80 @@ async function sendCancellationEmail({ to, orderNumber, amount, items, robloxUse
   }
 }
 
+async function sendCollabInviteEmail({ to, inviteUrl, name, inviterName }) {
+  if (!process.env.RESEND_API_KEY) {
+    logger.warn("RESEND_API_KEY not set — skipping collab invite email");
+    return;
+  }
+  try {
+    const resend = getResend();
+    await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `You've been invited as a Collaborator on RBstars`,
+      html: `
+        <div style="font-family:Inter,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;border-radius:12px;max-width:560px;margin:0 auto">
+          <div style="text-align:center;margin-bottom:32px">
+            <h1 style="color:#60a5fa;font-size:28px;margin:0">RBstars</h1>
+            <p style="color:#94a3b8;margin:4px 0 0">Collaborator Invitation</p>
+          </div>
+          <h2 style="color:#f1f5f9;font-size:20px">Hey ${name}, you've been invited!</h2>
+          <p style="color:#94a3b8;line-height:1.6">
+            ${inviterName || "The site owner"} has invited you to become a <strong style="color:#a78bfa">Collaborator</strong> on RBstars. As a collaborator, you'll be able to track your assigned products and earnings in your personal dashboard.
+          </p>
+          <div style="text-align:center;margin:32px 0">
+            <a href="${inviteUrl}" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">
+              Accept Invitation
+            </a>
+          </div>
+          <p style="color:#64748b;font-size:13px;text-align:center">
+            This invitation expires in 72 hours. If you didn't expect this, ignore this email.
+          </p>
+        </div>
+      `,
+    });
+    logger.info(`Collab invite email sent to ${to}`);
+  } catch (err) {
+    logger.error("Failed to send collab invite email:", err.message);
+    throw err;
+  }
+}
+
+async function sendCollabVerificationEmail({ to, code }) {
+  if (!process.env.RESEND_API_KEY) {
+    logger.warn("RESEND_API_KEY not set — skipping collab verification email");
+    return;
+  }
+  try {
+    const resend = getResend();
+    await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `RBstars Collaborator — Verification Code: ${code}`,
+      html: `
+        <div style="font-family:Inter,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;border-radius:12px;max-width:560px;margin:0 auto">
+          <div style="text-align:center;margin-bottom:32px">
+            <h1 style="color:#60a5fa;font-size:28px;margin:0">RBstars</h1>
+            <p style="color:#94a3b8;margin:4px 0 0">Collaborator Verification</p>
+          </div>
+          <h2 style="color:#f1f5f9;font-size:20px;text-align:center">Identity Verification</h2>
+          <p style="color:#94a3b8;text-align:center">Enter this code to verify your identity and activate your account:</p>
+          <div style="background:#1e293b;border:2px solid #334155;border-radius:12px;padding:24px;text-align:center;margin:24px 0">
+            <span style="font-size:40px;font-weight:800;color:#a78bfa;letter-spacing:12px">${code}</span>
+          </div>
+          <p style="color:#64748b;font-size:13px;text-align:center">
+            This code expires in 15 minutes. Never share this with anyone.
+          </p>
+        </div>
+      `,
+    });
+    logger.info(`Collab verification code sent to ${to}`);
+  } catch (err) {
+    logger.error("Failed to send collab verification email:", err.message);
+    throw err;
+  }
+}
+
 module.exports = {
   sendInviteEmail,
   sendVerificationEmail,
@@ -328,4 +402,6 @@ module.exports = {
   sendAgentReplyNotificationEmail,
   sendRefundEmail,
   sendCancellationEmail,
+  sendCollabInviteEmail,
+  sendCollabVerificationEmail,
 };
