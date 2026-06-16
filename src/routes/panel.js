@@ -40,6 +40,9 @@ router.get("/analytics/revenue", requirePermission("view_analytics"), analyticsC
 router.get("/analytics/by-game", requirePermission("view_analytics"), analyticsCtrl.getOrdersByGame);
 router.get("/analytics/top-products", requirePermission("view_analytics"), analyticsCtrl.getTopProducts);
 router.get("/analytics/claims", requirePermission("view_analytics"), analyticsCtrl.getClaimStats);
+router.get("/analytics/sales-summary", requirePermission("view_analytics"), analyticsCtrl.getSalesSummary);
+router.get("/analytics/conversion", requirePermission("view_analytics"), analyticsCtrl.getConversionRate);
+router.get("/analytics/stocker-commissions", ownerOnly, analyticsCtrl.getStockerCommissions);
 
 router.get("/roles/permissions", requirePermission("manage_roles"), rolesCtrl.getPermissions);
 router.get("/roles", requirePermission("manage_roles"), rolesCtrl.listRoles);
@@ -52,11 +55,14 @@ router.get("/team", requirePermission("manage_team"), teamCtrl.listMembers);
 router.get("/team/:id", requirePermission("manage_team"), teamCtrl.getMember);
 router.post("/team/invite", requirePermission("manage_team"), teamCtrl.inviteMember);
 router.patch("/team/:id", requirePermission("manage_team"), teamCtrl.updateMember);
+router.patch("/team/:id/commission", ownerOnly, teamCtrl.updateCommission);
 router.delete("/team/:id", requirePermission("manage_team"), teamCtrl.removeMember);
+router.delete("/team/:id/hard-delete", ownerOnly, teamCtrl.hardDeleteMember);
 router.post("/team/:id/resend-invite", requirePermission("manage_team"), teamCtrl.resendInvite);
 
 router.get("/orders", requirePermission("manage_orders"), panelOrdersCtrl.listOrders);
 router.get("/orders/:id", requirePermission("manage_orders"), panelOrdersCtrl.getOrder);
+router.patch("/orders/bulk-status", requirePermission("manage_orders"), panelOrdersCtrl.bulkUpdateStatus);
 router.patch("/orders/:id/status", requirePermission("manage_orders"), panelOrdersCtrl.updateOrderStatus);
 router.get("/orders/:orderId/claim-chat", requirePermission("manage_orders"), panelOrdersCtrl.getClaimChat);
 
@@ -106,6 +112,20 @@ router.delete("/upload", ownerOnly, uploadCtrl.deleteImage);
 
 router.get("/settings", ownerOnly, settingsCtrl.getSettings);
 router.patch("/settings", ownerOnly, settingsCtrl.updateSettings);
+
+const tutorialCtrl = require("../controllers/tutorialController");
+router.get("/tutorials", tutorialCtrl.listTutorials);
+router.post("/tutorials", requirePermission("edit_site_content"), tutorialCtrl.createTutorial);
+router.patch("/tutorials/reorder", requirePermission("edit_site_content"), tutorialCtrl.reorderTutorials);
+router.patch("/tutorials/:id", requirePermission("edit_site_content"), tutorialCtrl.updateTutorial);
+router.delete("/tutorials/:id", requirePermission("edit_site_content"), tutorialCtrl.deleteTutorial);
+
+const customerAdminCtrl = require("../controllers/customerAdminController");
+router.get("/customers", ownerOnly, customerAdminCtrl.listCustomers);
+router.get("/customers/stats", ownerOnly, customerAdminCtrl.getCustomerStats);
+router.get("/customers/:id", ownerOnly, customerAdminCtrl.getCustomer);
+router.patch("/customers/:id", ownerOnly, customerAdminCtrl.updateCustomer);
+router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 
 const claimCtrl = require("../controllers/claimController");
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
