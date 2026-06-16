@@ -2,6 +2,7 @@ const Order = require("../models/Order");
 const ClaimSession = require("../models/ClaimSession");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const { sendCancellationEmail, sendRefundEmail } = require("../config/email");
 
 const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled", "partially_refunded"];
 
@@ -50,7 +51,6 @@ exports.getOrder = catchAsync(async (req, res, next) => {
 
   const claim = await ClaimSession.findOne({ orderRef: order.orderNumber });
 
-  const Customer = require("../models/Customer");
   let customerOrderCount = 1;
   try {
     const allOrders = await Order.countDocuments({ "customer.email": order.customer.email });
@@ -70,6 +70,12 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
 
   if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
 
+  const isPaid = order.payment && order.payment.status === "succeeded";
+
+  if (status === "cancelled" && !isPaid) {
+    return next(new AppError("Cannot cancel an unpaid order. Only paid orders can be cancelled.", 400));
+  }
+
   const prevStatus = order.status;
   order.status = status;
   if (adminNotes !== undefined) order.adminNotes = adminNotes;
@@ -84,6 +90,22 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   addTimeline(order, `Status changed from "${prevStatus}" to "${status}"`, by);
 
   await order.save();
+
+  if (status === "cancelled" && isPaid) {
+    try {
+      await sendCancellationEmail({
+        to: order.customer.email,
+        orderNumber: order.orderNumber,
+        items: (order.items || []).map(item => ({
+          name: item.productSnapshot?.name || "Item",
+          quantity: item.quantity,
+        })),
+        robloxUsername: order.customer.robloxUsername,
+      });
+    } catch (emailErr) {
+      console.error("Failed to send cancellation email:", emailErr.message);
+    }
+  }
 
   res.json({ success: true, data: { order } });
 });
@@ -118,6 +140,11 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
+  const isPaid = order.payment && order.payment.status === "succeeded";
+  if (!isPaid) {
+    return next(new AppError("Cannot refund an unpaid order. Only paid orders can be refunded.", 400));
+  }
+
   if (!amount || amount <= 0) return next(new AppError("Refund amount must be greater than 0", 400));
   if (amount > order.pricing.total) return next(new AppError("Refund amount cannot exceed order total", 400));
 
@@ -125,7 +152,7 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
 
   const prevStatus = order.status;
   order.status = isPartial ? "partially_refunded" : "refunded";
-  order.payment.status = isPartial ? "refunded" : "refunded";
+  order.payment.status = "refunded";
   order.refundAmount = (order.refundAmount || 0) + amount;
   order.refundReason = reason || "";
   order.refundedAt = new Date();
@@ -135,6 +162,22 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
   addTimeline(order, isPartial ? "Partial refund issued" : "Order refunded", by, details);
 
   await order.save();
+
+  try {
+    await sendRefundEmail({
+      to: order.customer.email,
+      orderNumber: order.orderNumber,
+      amount,
+      reason: reason || "",
+      items: (order.items || []).map(item => ({
+        name: item.productSnapshot?.name || "Item",
+        quantity: item.quantity,
+      })),
+      robloxUsername: order.customer.robloxUsername,
+    });
+  } catch (emailErr) {
+    console.error("Failed to send refund email:", emailErr.message);
+  }
 
   res.json({
     success: true,
@@ -177,6 +220,13 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
 
   if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
 
+  if (status === "cancelled" || status === "refunded" || status === "partially_refunded") {
+    const unpaidOrders = await Order.find({ _id: { $in: idList }, "payment.status": { $ne: "succeeded" } }).countDocuments();
+    if (unpaidOrders > 0) {
+      return next(new AppError(`Cannot bulk ${status} orders that haven't been paid. Please filter to paid orders only.`, 400));
+    }
+  }
+
   const result = await Order.updateMany(
     { _id: { $in: idList } },
     {
@@ -184,6 +234,25 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
       $push: { timeline: { action: `Bulk status update to "${status}"`, by: req.panelUser?.email || "Admin", timestamp: new Date() } },
     }
   );
+
+  if (status === "cancelled") {
+    try {
+      const updatedOrders = await Order.find({ _id: { $in: idList } });
+      for (const order of updatedOrders) {
+        await sendCancellationEmail({
+          to: order.customer.email,
+          orderNumber: order.orderNumber,
+          items: (order.items || []).map(item => ({
+            name: item.productSnapshot?.name || "Item",
+            quantity: item.quantity,
+          })),
+          robloxUsername: order.customer.robloxUsername,
+        });
+      }
+    } catch (emailErr) {
+      console.error("Failed to send bulk cancellation emails:", emailErr.message);
+    }
+  }
 
   res.json({ success: true, message: `Updated ${result.modifiedCount} orders`, data: { modified: result.modifiedCount } });
 });
