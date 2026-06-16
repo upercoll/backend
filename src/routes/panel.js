@@ -57,13 +57,17 @@ router.post("/team/invite", requirePermission("manage_team"), teamCtrl.inviteMem
 router.patch("/team/:id", requirePermission("manage_team"), teamCtrl.updateMember);
 router.patch("/team/:id/commission", ownerOnly, teamCtrl.updateCommission);
 router.delete("/team/:id", requirePermission("manage_team"), teamCtrl.removeMember);
-router.delete("/team/:id/hard-delete", ownerOnly, teamCtrl.hardDeleteMember);
+router.delete("/team/:id/hard-delete", requirePermission("manage_team"), teamCtrl.hardDeleteMember);
 router.post("/team/:id/resend-invite", requirePermission("manage_team"), teamCtrl.resendInvite);
 
 router.get("/orders", requirePermission("manage_orders"), panelOrdersCtrl.listOrders);
-router.get("/orders/:id", requirePermission("manage_orders"), panelOrdersCtrl.getOrder);
 router.patch("/orders/bulk-status", requirePermission("manage_orders"), panelOrdersCtrl.bulkUpdateStatus);
+router.get("/orders/:id", requirePermission("manage_orders"), panelOrdersCtrl.getOrder);
 router.patch("/orders/:id/status", requirePermission("manage_orders"), panelOrdersCtrl.updateOrderStatus);
+router.post("/orders/:id/fulfill", requirePermission("manage_orders"), panelOrdersCtrl.fulfillOrder);
+router.post("/orders/:id/refund", requirePermission("manage_orders"), panelOrdersCtrl.refundOrder);
+router.post("/orders/:id/timeline", requirePermission("manage_orders"), panelOrdersCtrl.addTimeline);
+router.patch("/orders/:id/tags", requirePermission("manage_orders"), panelOrdersCtrl.updateTags);
 router.get("/orders/:orderId/claim-chat", requirePermission("manage_orders"), panelOrdersCtrl.getClaimChat);
 
 router.get("/games", gamesCtrl.listGames);
