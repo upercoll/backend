@@ -11,48 +11,10 @@ const logger = require("../utils/logger");
 let io;
 
 const agentQueues = new Map();
-const claimRouting = new Map();
 const agentSockets = new Map();
-
-const CLAIM_TIMEOUT_MS = 30000;
 
 function getAgentsForGame(game) {
   return agentQueues.get(game) || [];
-}
-
-function routeClaimToNextAgent(roomId, sessionData) {
-  const routing = claimRouting.get(roomId);
-  if (!routing) return;
-
-  if (routing.timeout) clearTimeout(routing.timeout);
-
-  if (routing.currentIdx >= routing.agents.length) {
-    claimRouting.delete(roomId);
-    logger.info(`No agents available for claim ${roomId}`);
-    return;
-  }
-
-  const targetSocketId = routing.agents[routing.currentIdx];
-  const targetSocket = io.sockets.sockets.get(targetSocketId);
-
-  if (!targetSocket) {
-    routing.currentIdx++;
-    routeClaimToNextAgent(roomId, sessionData);
-    return;
-  }
-
-  targetSocket.emit("queue:claim_popup", { ...sessionData, roomId });
-
-  routing.timeout = setTimeout(() => {
-    logger.info(`Claim ${roomId} timed out for agent ${targetSocketId}`);
-    routing.currentIdx++;
-    AgentStats.findOneAndUpdate(
-      { agentId: targetSocket.panelUserId },
-      { $inc: { timedOutClaims: 1 } },
-      { upsert: true }
-    ).catch(() => {});
-    routeClaimToNextAgent(roomId, sessionData);
-  }, CLAIM_TIMEOUT_MS);
 }
 
 function initSocket(server) {
@@ -146,6 +108,12 @@ function initSocket(server) {
       logger.info(`Customer joined claim room: ${roomId}`);
     });
 
+    socket.on("claim:agent_browse", async ({ roomId }) => {
+      if (!roomId) return;
+      socket.join(`claim:${roomId}`);
+      logger.info(`Agent browsing claim room: ${roomId}`);
+    });
+
     socket.on("claim:agent_join", async ({ roomId, agentName }) => {
       if (!roomId) return;
       socket.join(`claim:${roomId}`);
@@ -195,8 +163,38 @@ function initSocket(server) {
         const session = await ClaimSession.findOne({ roomId });
         if (!session || session.status === "ended") return;
 
-        const msgSender = sender === "agent" && (socket.user || socket.panelUserId) ? "agent" : "customer";
+        const isAgentUser = socket.user || socket.panelUserId;
+        const msgSender = sender === "agent" && isAgentUser ? "agent" : "customer";
         const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : "Customer");
+
+        let autoClaimed = false;
+
+        if (msgSender === "agent" && session.status === "pending") {
+          const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+          const agentDisplayName = senderName || socket.agentName || socket.user?.displayName || "Agent";
+
+          session.status = "active";
+          session.assignedAgent = {
+            userId: agentId || null,
+            name: agentDisplayName,
+            joinedAt: new Date(),
+          };
+
+          const joinMsg = {
+            sender: "system",
+            text: `${agentDisplayName} has joined the chat`,
+            senderName: "System",
+            timestamp: new Date(),
+          };
+          session.messages.push(joinMsg);
+          autoClaimed = true;
+
+          AgentStats.findOneAndUpdate(
+            { agentId: agentId },
+            { $inc: { totalClaims: 1 }, lastSeen: new Date() },
+            { upsert: true }
+          ).catch(() => {});
+        }
 
         const msg = {
           sender: msgSender,
@@ -213,12 +211,46 @@ function initSocket(server) {
         }
 
         await session.save();
-        const saved = session.messages[session.messages.length - 1];
+        const savedMsg = session.messages[session.messages.length - 1];
+        const savedMsgObj = savedMsg.toObject();
 
-        io.to(`claim:${roomId}`).emit("claim:new_message", { ...saved.toObject(), roomId });
+        if (autoClaimed) {
+          const joinSysMsg = session.messages[session.messages.length - 2];
+          socket.to(`claim:${roomId}`).emit("claim:agent_joined", {
+            agentName: session.assignedAgent.name,
+            message: `${session.assignedAgent.name} has joined the chat`,
+          });
+          socket.to(`claim:${roomId}`).emit("claim:new_message", {
+            ...joinSysMsg.toObject(),
+            roomId,
+          });
+          io.to("agent-queue-room").emit("queue:claim_taken", {
+            roomId,
+            agentId: socket.panelUserId || socket.user?.id,
+            agentName: session.assignedAgent.name,
+          });
+          socket.emit("queue:claim_auto_assigned", {
+            roomId,
+            session: session.toObject(),
+          });
+          io.to("admin-room").emit("admin:claim_status_changed", {
+            roomId,
+            status: "active",
+            agentName: session.assignedAgent.name,
+            agentId: socket.panelUserId || socket.user?.id,
+          });
+        }
+
+        socket.to(`claim:${roomId}`).emit("claim:new_message", { ...savedMsgObj, roomId });
+        socket.emit("claim:message_ack", { ...savedMsgObj, roomId });
 
         if (msgSender === "customer") {
           io.to("admin-room").emit("admin:claim_message", {
+            roomId,
+            senderName: name,
+            text: text.slice(0, 100),
+          });
+          io.to("agent-queue-room").emit("queue:customer_message", {
             roomId,
             senderName: name,
             text: text.slice(0, 100),
@@ -325,6 +357,10 @@ function initSocket(server) {
           message: "The support agent has ended the chat. Thank you!",
         });
         io.to("admin-room").emit("admin:claim_status_changed", { roomId, status: "ended" });
+        io.to("agent-queue-room").emit("queue:claim_ended", {
+          roomId,
+          agentId: session.assignedAgent?.userId,
+        });
       } catch (err) {
         logger.error("claim:end error:", err);
       }
@@ -385,6 +421,13 @@ function initSocket(server) {
           message: "Your order has been delivered! Check your inventory.",
         });
         io.to("admin-room").emit("admin:claim_status_changed", { roomId, status: "claimed" });
+        io.to("agent-queue-room").emit("queue:claim_completed", {
+          roomId,
+          agentId: session.assignedAgent?.userId,
+          agentName: session.assignedAgent?.name,
+          itemName: session.itemName,
+          game: session.game,
+        });
       } catch (err) {
         logger.error("claim:mark_claimed error:", err);
       }
@@ -416,7 +459,7 @@ function initSocket(server) {
     });
 
     socket.on("queue:leave", ({ agentId }) => {
-      for (const [game, queue] of agentQueues.entries()) {
+      for (const [, queue] of agentQueues.entries()) {
         const idx = queue.indexOf(socket.id);
         if (idx !== -1) queue.splice(idx, 1);
       }
@@ -431,101 +474,10 @@ function initSocket(server) {
       io.to("admin-room").emit("admin:agent_offline", { agentId });
     });
 
-    socket.on("queue:answer", async ({ roomId, agentId, agentName }) => {
-      const routing = claimRouting.get(roomId);
-      if (!routing) return;
-
-      if (routing.answeredBy) return;
-      routing.answeredBy = agentId;
-
-      if (routing.timeout) {
-        clearTimeout(routing.timeout);
-        routing.timeout = null;
-      }
-      claimRouting.delete(roomId);
-
-      socket.panelUserId = agentId;
-      socket.agentName = agentName;
-      socket.join(`claim:${roomId}`);
-      socket.claimRoomId = roomId;
-
-      try {
-        const session = await ClaimSession.findOne({ roomId });
-        if (!session) return;
-
-        if (session.status !== "pending") {
-          socket.emit("queue:already_taken", { roomId });
-          return;
-        }
-
-        session.status = "active";
-        session.assignedAgent = {
-          userId: agentId,
-          name: agentName || "Agent",
-          joinedAt: new Date(),
-        };
-        const joinMsg = {
-          sender: "system",
-          text: `${agentName || "Agent"} has joined the chat`,
-          senderName: "System",
-          timestamp: new Date(),
-        };
-        session.messages.push(joinMsg);
-        await session.save();
-
-        AgentStats.findOneAndUpdate(
-          { agentId },
-          { $inc: { totalClaims: 1 }, lastSeen: new Date() },
-          { upsert: true }
-        ).catch(() => {});
-
-        socket.emit("queue:claim_assigned", { roomId, session: session.toObject() });
-
-        io.to(`claim:${roomId}`).emit("claim:agent_joined", {
-          agentName: agentName || "Agent",
-          message: `${agentName || "Agent"} has joined the chat`,
-        });
-
-        io.to("admin-room").emit("admin:claim_status_changed", {
-          roomId,
-          status: "active",
-          agentName: agentName || "Agent",
-          agentId,
-        });
-      } catch (err) {
-        logger.error("queue:answer error:", err);
-      }
-    });
-
-    socket.on("queue:decline", ({ roomId, agentId }) => {
-      const routing = claimRouting.get(roomId);
-      if (!routing || routing.answeredBy) return;
-
-      if (routing.timeout) clearTimeout(routing.timeout);
-      routing.currentIdx++;
-
-      AgentStats.findOneAndUpdate(
-        { agentId },
-        { $inc: { declinedClaims: 1 } },
-        { upsert: true }
-      ).catch(() => {});
-
-      routeClaimToNextAgent(roomId, routing.sessionData);
-    });
-
-    socket.on("queue:new_claim_notify", async ({ game, sessionData }) => {
-      const agents = getAgentsForGame(game);
-      if (!agents.length) return;
-
-      const routing = { agents: [...agents], currentIdx: 0, timeout: null, sessionData, answeredBy: null };
-      claimRouting.set(sessionData.roomId, routing);
-      routeClaimToNextAgent(sessionData.roomId, sessionData);
-    });
-
     socket.on("disconnect", () => {
       logger.info(`Socket disconnected: ${sessionId}`);
 
-      for (const [game, queue] of agentQueues.entries()) {
+      for (const [, queue] of agentQueues.entries()) {
         const idx = queue.indexOf(socket.id);
         if (idx !== -1) queue.splice(idx, 1);
       }
@@ -577,15 +529,13 @@ function notifyNewClaim(sessionData) {
   }
 
   if (agents.length > 0) {
-    const routing = {
-      agents: [...agents],
-      currentIdx: 0,
-      timeout: null,
-      sessionData,
-      answeredBy: null,
-    };
-    claimRouting.set(sessionData.roomId, routing);
-    routeClaimToNextAgent(sessionData.roomId, sessionData);
+    for (const socketId of agents) {
+      const targetSocket = io.sockets.sockets.get(socketId);
+      if (targetSocket) {
+        targetSocket.emit("queue:new_pending_claim", sessionData);
+      }
+    }
+    logger.info(`Notified ${agents.length} agents of new claim ${sessionData.roomId}`);
   } else {
     logger.info(`No agents online for claim ${sessionData.roomId}`);
   }
