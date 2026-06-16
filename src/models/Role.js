@@ -14,6 +14,8 @@ const PERMISSIONS = [
   "monitor_agents",
   "view_pod",
   "claim_agent",
+  "manage_collaborators",
+  "upload_images",
 ];
 
 const roleSchema = new mongoose.Schema(
