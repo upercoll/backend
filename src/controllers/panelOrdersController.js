@@ -50,7 +50,7 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
-  const valid = ["pending", "paid", "delivering", "completed", "cancelled", "refunded"];
+  const valid = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled"];
   if (!valid.includes(status)) return next(new AppError("Invalid status", 400));
 
   order.status = status;
@@ -58,6 +58,20 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   await order.save();
 
   res.json({ success: true, data: { order } });
+});
+
+exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
+  const { ids, status, adminNotes } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) return next(new AppError("ids must be a non-empty array", 400));
+
+  const valid = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled"];
+  if (!valid.includes(status)) return next(new AppError("Invalid status", 400));
+
+  const update = { status };
+  if (adminNotes !== undefined) update.adminNotes = adminNotes;
+
+  const result = await Order.updateMany({ _id: { $in: ids } }, { $set: update });
+  res.json({ success: true, message: `Updated ${result.modifiedCount} orders`, data: { modified: result.modifiedCount } });
 });
 
 exports.getClaimChat = catchAsync(async (req, res, next) => {
