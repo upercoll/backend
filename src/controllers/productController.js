@@ -121,3 +121,77 @@ exports.toggleStock = catchAsync(async (req, res, next) => {
 
   res.json({ success: true, data: product });
 });
+
+exports.adminGetAll = catchAsync(async (req, res) => {
+  const { search, game, activeStatus, page = 1, limit = 20, sort } = req.query;
+
+  const filter = {};
+  if (game) filter.game = game;
+  if (activeStatus === "active") { filter.active = true; filter.outOfStock = false; }
+  else if (activeStatus === "oos") { filter.outOfStock = true; }
+  else if (activeStatus === "inactive") { filter.active = false; }
+
+  if (search) {
+    filter.$or = [
+      { name: { $regex: search, $options: "i" } },
+      { description: { $regex: search, $options: "i" } },
+      { tags: { $in: [new RegExp(search, "i")] } },
+    ];
+  }
+
+  const sortObj = sort === "price_asc" ? { price: 1 }
+    : sort === "price_desc" ? { price: -1 }
+    : sort === "name" ? { name: 1 }
+    : sort === "sales" ? { salesCount: -1 }
+    : { createdAt: -1 };
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const [products, total] = await Promise.all([
+    Product.find(filter).populate("category", "name slug").sort(sortObj).skip(skip).limit(parseInt(limit)),
+    Product.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, total, count: products.length, data: products });
+});
+
+exports.toggleActive = catchAsync(async (req, res, next) => {
+  const product = await Product.findById(req.params.id);
+  if (!product) return next(new AppError("Product not found", 404));
+  product.active = !product.active;
+  await product.save();
+  res.json({ success: true, data: product });
+});
+
+exports.bulkCreate = catchAsync(async (req, res, next) => {
+  const { products } = req.body;
+  if (!Array.isArray(products) || products.length === 0) {
+    return next(new AppError("products must be a non-empty array", 400));
+  }
+  if (products.length > 100) {
+    return next(new AppError("Maximum 100 products per bulk create", 400));
+  }
+
+  const created = [];
+  const errors = [];
+
+  for (const [i, p] of products.entries()) {
+    try {
+      if (!p.slug) {
+        p.slug = (p.name || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+      }
+      const existing = await Product.findOne({ slug: p.slug });
+      if (existing) p.slug = `${p.slug}-${Date.now()}-${i}`;
+      const product = await Product.create(p);
+      created.push(product);
+    } catch (err) {
+      errors.push({ index: i, name: p.name, error: err.message });
+    }
+  }
+
+  res.status(201).json({
+    success: true,
+    data: { created, errors, total: created.length },
+    message: `Created ${created.length} product${created.length !== 1 ? "s" : ""}${errors.length > 0 ? `, ${errors.length} failed` : ""}`,
+  });
+});
