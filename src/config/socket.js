@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const ChatMessage = require("../models/ChatMessage");
 const ClaimSession = require("../models/ClaimSession");
+const Order = require("../models/Order");
 const AgentStats = require("../models/AgentStats");
 const AdminProfile = require("../models/AdminProfile");
 const { sendAgentReplyNotificationEmail } = require("./email");
@@ -343,6 +344,42 @@ function initSocket(server) {
           timestamp: new Date(),
         });
         await session.save();
+
+        if (session.assignedAgent?.userId) {
+          AgentStats.findOneAndUpdate(
+            { agentId: session.assignedAgent.userId },
+            { $inc: { completedClaims: 1 } },
+            { upsert: true }
+          ).catch(() => {});
+        }
+
+        if (session.orderRef) {
+          try {
+            const linkedOrder = await Order.findOne({ orderNumber: session.orderRef });
+            if (linkedOrder && linkedOrder.status === "paid") {
+              linkedOrder.status = "fulfilled";
+              linkedOrder.fulfillmentStatus = "fulfilled";
+              linkedOrder.fulfilledAt = new Date();
+              linkedOrder.fulfilledBy = session.assignedAgent?.name || "Claim Agent";
+              linkedOrder.delivery.status = "delivered";
+              linkedOrder.delivery.deliveredAt = new Date();
+              if (!linkedOrder.timeline) linkedOrder.timeline = [];
+              linkedOrder.timeline.push({
+                action: "Order auto-fulfilled via claim chat",
+                by: session.assignedAgent?.name || "Claim Agent",
+                details: `Claim session ${session.roomId} marked as delivered`,
+                timestamp: new Date(),
+              });
+              await linkedOrder.save();
+              io.to("admin-room").emit("admin:order_fulfilled", {
+                orderNumber: session.orderRef,
+                fulfilledBy: session.assignedAgent?.name || "Claim Agent",
+              });
+            }
+          } catch (orderErr) {
+            logger.error("Failed to auto-fulfill order from claim:", orderErr);
+          }
+        }
 
         io.to(`claim:${roomId}`).emit("claim:marked_claimed", {
           message: "Your order has been delivered! Check your inventory.",
