@@ -3,6 +3,13 @@ const ClaimSession = require("../models/ClaimSession");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
+const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled", "partially_refunded"];
+
+function addTimeline(order, action, by, details) {
+  if (!order.timeline) order.timeline = [];
+  order.timeline.push({ action, by: by || "Admin", details, timestamp: new Date() });
+}
+
 exports.listOrders = catchAsync(async (req, res) => {
   const { status, payment, page = 1, limit = 20, search, game } = req.query;
   const filter = {};
@@ -42,7 +49,18 @@ exports.getOrder = catchAsync(async (req, res, next) => {
   if (!order) return next(new AppError("Order not found", 404));
 
   const claim = await ClaimSession.findOne({ orderRef: order.orderNumber });
-  res.json({ success: true, data: { order, claimSession: claim?.toObject() || null } });
+
+  const Customer = require("../models/Customer");
+  let customerOrderCount = 1;
+  try {
+    const allOrders = await Order.countDocuments({ "customer.email": order.customer.email });
+    customerOrderCount = allOrders;
+  } catch {}
+
+  const orderObj = order.toObject();
+  orderObj.customerOrderCount = customerOrderCount;
+
+  res.json({ success: true, data: { order: orderObj, claimSession: claim?.toObject() || null } });
 });
 
 exports.updateOrderStatus = catchAsync(async (req, res, next) => {
@@ -50,27 +68,123 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
-  const valid = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled"];
-  if (!valid.includes(status)) return next(new AppError("Invalid status", 400));
+  if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
 
+  const prevStatus = order.status;
   order.status = status;
   if (adminNotes !== undefined) order.adminNotes = adminNotes;
+
+  if (status === "fulfilled" && prevStatus !== "fulfilled") {
+    order.fulfillmentStatus = "fulfilled";
+    order.fulfilledAt = new Date();
+    order.fulfilledBy = req.panelUser?.email || "Admin";
+  }
+
+  const by = req.panelUser?.email || "Admin";
+  addTimeline(order, `Status changed from "${prevStatus}" to "${status}"`, by);
+
+  await order.save();
+
+  res.json({ success: true, data: { order } });
+});
+
+exports.fulfillOrder = catchAsync(async (req, res, next) => {
+  const { trackingNumber, carrier, notes } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return next(new AppError("Order not found", 404));
+
+  const prevStatus = order.status;
+  order.status = "fulfilled";
+  order.fulfillmentStatus = "fulfilled";
+  order.fulfilledAt = new Date();
+  order.fulfilledBy = req.panelUser?.email || "Admin";
+
+  if (trackingNumber) order.delivery.trackingNumber = trackingNumber;
+  if (carrier) order.delivery.carrier = carrier;
+  if (notes) order.delivery.notes = notes;
+  order.delivery.status = "delivered";
+  order.delivery.deliveredAt = new Date();
+
+  const by = req.panelUser?.email || "Admin";
+  addTimeline(order, `Order marked as fulfilled`, by, trackingNumber ? `Tracking: ${trackingNumber}` : undefined);
+
+  await order.save();
+
+  res.json({ success: true, data: { order } });
+});
+
+exports.refundOrder = catchAsync(async (req, res, next) => {
+  const { amount, reason, partial, restockItems } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return next(new AppError("Order not found", 404));
+
+  if (!amount || amount <= 0) return next(new AppError("Refund amount must be greater than 0", 400));
+  if (amount > order.pricing.total) return next(new AppError("Refund amount cannot exceed order total", 400));
+
+  const isPartial = partial || amount < order.pricing.total;
+
+  const prevStatus = order.status;
+  order.status = isPartial ? "partially_refunded" : "refunded";
+  order.payment.status = isPartial ? "refunded" : "refunded";
+  order.refundAmount = (order.refundAmount || 0) + amount;
+  order.refundReason = reason || "";
+  order.refundedAt = new Date();
+
+  const by = req.panelUser?.email || "Admin";
+  const details = `$${amount.toFixed(2)} refunded${reason ? ` — Reason: ${reason}` : ""}${restockItems ? " — Inventory restocked" : ""}`;
+  addTimeline(order, isPartial ? "Partial refund issued" : "Order refunded", by, details);
+
+  await order.save();
+
+  res.json({
+    success: true,
+    data: {
+      order,
+      refundAmount: amount,
+      isPartial,
+      message: `Refund of $${amount.toFixed(2)} processed successfully`,
+    },
+  });
+});
+
+exports.addTimeline = catchAsync(async (req, res, next) => {
+  const { action, details } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return next(new AppError("Order not found", 404));
+
+  const by = req.panelUser?.email || "Admin";
+  addTimeline(order, action || "Note added", by, details);
+  await order.save();
+
+  res.json({ success: true, data: { order } });
+});
+
+exports.updateTags = catchAsync(async (req, res, next) => {
+  const { tags } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return next(new AppError("Order not found", 404));
+
+  order.tags = Array.isArray(tags) ? tags : [];
   await order.save();
 
   res.json({ success: true, data: { order } });
 });
 
 exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
-  const { ids, status, adminNotes } = req.body;
-  if (!Array.isArray(ids) || ids.length === 0) return next(new AppError("ids must be a non-empty array", 400));
+  const { orderIds, ids, status } = req.body;
+  const idList = orderIds || ids;
+  if (!Array.isArray(idList) || idList.length === 0) return next(new AppError("orderIds must be a non-empty array", 400));
 
-  const valid = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled"];
-  if (!valid.includes(status)) return next(new AppError("Invalid status", 400));
+  if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
 
-  const update = { status };
-  if (adminNotes !== undefined) update.adminNotes = adminNotes;
+  const result = await Order.updateMany(
+    { _id: { $in: idList } },
+    {
+      $set: { status },
+      $push: { timeline: { action: `Bulk status update to "${status}"`, by: req.panelUser?.email || "Admin", timestamp: new Date() } },
+    }
+  );
 
-  const result = await Order.updateMany({ _id: { $in: ids } }, { $set: update });
   res.json({ success: true, message: `Updated ${result.modifiedCount} orders`, data: { modified: result.modifiedCount } });
 });
 
