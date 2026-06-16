@@ -134,9 +134,10 @@ exports.removeMember = catchAsync(async (req, res, next) => {
 exports.hardDeleteMember = catchAsync(async (req, res, next) => {
   const member = await TeamMember.findById(req.params.id);
   if (!member) return next(new AppError("Member not found", 404));
-  if (member.status === "active") return next(new AppError("Cannot permanently delete an active member. Disable them first.", 400));
 
   await TeamMember.findByIdAndDelete(req.params.id);
+  await AdminProfile.deleteMany({ memberId: req.params.id });
+
   res.json({ success: true, message: "Member permanently deleted" });
 });
 
