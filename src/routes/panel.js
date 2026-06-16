@@ -84,9 +84,11 @@ router.delete("/categories/:id", requirePermission("manage_categories"), categor
 router.post("/categories/:id/subcategories", requirePermission("manage_categories"), categoryCtrl.addSubcategory);
 router.delete("/categories/:id/subcategories/:subId", requirePermission("manage_categories"), categoryCtrl.removeSubcategory);
 
-router.get("/products", requirePermission("manage_products"), productCtrl.getAll);
+router.get("/products", requirePermission("manage_products"), productCtrl.adminGetAll);
+router.post("/products/bulk", requirePermission("manage_products"), productCtrl.bulkCreate);
 router.get("/products/:id", requirePermission("manage_products"), productCtrl.getOne);
 router.post("/products", requirePermission("manage_products"), upload.array("images", 10), productCtrl.create);
+router.patch("/products/:id/toggle-active", requirePermission("manage_products"), productCtrl.toggleActive);
 router.patch("/products/:id", requirePermission("manage_products"), upload.array("images", 10), productCtrl.update);
 router.delete("/products/:id", requirePermission("manage_products"), productCtrl.delete);
 
