@@ -77,7 +77,15 @@ exports.memberLogin = catchAsync(async (req, res, next) => {
     success: true,
     token,
     data: {
-      user: { id: member._id, email: member.email, type: "team_member", isOwner: false },
+      user: {
+        id: member._id,
+        email: member.email,
+        type: "team_member",
+        isOwner: false,
+        permissions: member.role.permissions || [],
+        claimGames: member.claimGames || [],
+        role: member.role,
+      },
       role: member.role,
       permissions: member.role.permissions,
       claimGames: member.claimGames,
