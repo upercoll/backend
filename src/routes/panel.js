@@ -112,9 +112,16 @@ router.post("/promos", requirePermission("manage_promos"), promoCtrl.create);
 router.patch("/promos/:id", requirePermission("manage_promos"), promoCtrl.update);
 router.delete("/promos/:id", requirePermission("manage_promos"), promoCtrl.delete);
 
-router.post("/upload/single", ownerOnly, upload.single("file"), uploadCtrl.uploadSingle);
-router.post("/upload/multiple", ownerOnly, upload.array("files", 20), uploadCtrl.uploadMultiple);
-router.delete("/upload", ownerOnly, uploadCtrl.deleteImage);
+const canUpload = (req, res, next) => {
+  if (req.panelUser?.isOwner) return next();
+  if (req.panelUser?.permissions?.includes("manage_products")) return next();
+  if (req.panelUser?.permissions?.includes("upload_images")) return next();
+  return res.status(403).json({ success: false, message: "Permission denied" });
+};
+
+router.post("/upload/single", canUpload, upload.single("file"), uploadCtrl.uploadSingle);
+router.post("/upload/multiple", canUpload, upload.array("files", 20), uploadCtrl.uploadMultiple);
+router.delete("/upload", canUpload, uploadCtrl.deleteImage);
 
 router.get("/settings", ownerOnly, settingsCtrl.getSettings);
 router.patch("/settings", ownerOnly, settingsCtrl.updateSettings);
@@ -134,6 +141,7 @@ router.patch("/customers/:id", ownerOnly, customerAdminCtrl.updateCustomer);
 router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 
 const claimCtrl = require("../controllers/claimController");
+router.get("/claims/queue", requirePermission("claim_agent"), claimCtrl.getAgentQueue);
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
 router.get("/claims/:roomId", requirePermission("monitor_agents"), claimCtrl.getSession);
 router.get("/claims/:roomId/full", requirePermission("monitor_agents"), claimCtrl.getFullSession);
