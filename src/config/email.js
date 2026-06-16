@@ -241,10 +241,91 @@ async function sendAgentReplyNotificationEmail({ to, orderRef, agentName, agentP
   }
 }
 
+async function sendRefundEmail({ to, orderNumber, amount, reason, items, robloxUsername }) {
+  if (!process.env.RESEND_API_KEY) return;
+  try {
+    const resend = getResend();
+    const itemRows = (items || []).map(item => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #1e293b;color:#e2e8f0;font-size:13px">${item.name}</td>
+        <td style="padding:8px 0;border-bottom:1px solid #1e293b;color:#94a3b8;font-size:13px;text-align:center">x${item.quantity}</td>
+      </tr>
+    `).join("");
+    await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `Refund Processed — ${orderNumber} | RBstars`,
+      html: `
+        <div style="font-family:Inter,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;border-radius:12px;max-width:560px;margin:0 auto">
+          <div style="text-align:center;margin-bottom:28px">
+            <h1 style="color:#60a5fa;font-size:28px;margin:0 0 4px">RBstars</h1>
+            <p style="color:#64748b;margin:0;font-size:13px">Refund Confirmation</p>
+          </div>
+          <div style="background:#7f1d1d22;border:1.5px solid #7f1d1d55;border-radius:12px;padding:20px;text-align:center;margin-bottom:24px">
+            <h2 style="color:#fca5a5;font-size:18px;margin:0 0 4px">Refund Processed</h2>
+            <p style="color:#fecaca;margin:0;font-size:13px">Your refund of <strong>$${Number(amount).toFixed(2)}</strong> has been issued</p>
+          </div>
+          <div style="background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px">
+            <p style="margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#64748b">Order Reference</p>
+            <p style="margin:0;font-size:16px;font-weight:800;color:#60a5fa">${orderNumber}</p>
+          </div>
+          ${reason ? `<div style="background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px"><p style="margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#64748b">Reason</p><p style="margin:0;font-size:14px;color:#e2e8f0">${reason}</p></div>` : ""}
+          ${itemRows ? `<div style="background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px"><p style="margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#64748b">Items</p><table style="width:100%;border-collapse:collapse"><tbody>${itemRows}</tbody></table></div>` : ""}
+          <p style="color:#64748b;font-size:12px;text-align:center;margin:0">Refunds typically appear within 5–10 business days depending on your bank.<br/>Thank you for shopping with RBstars.</p>
+        </div>
+      `,
+    });
+    logger.info(`Refund email sent to ${to} for order ${orderNumber}`);
+  } catch (err) {
+    logger.error("Failed to send refund email:", err.message);
+  }
+}
+
+async function sendCancellationEmail({ to, orderNumber, amount, items, robloxUsername }) {
+  if (!process.env.RESEND_API_KEY) return;
+  try {
+    const resend = getResend();
+    const itemRows = (items || []).map(item => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #1e293b;color:#e2e8f0;font-size:13px">${item.name}</td>
+        <td style="padding:8px 0;border-bottom:1px solid #1e293b;color:#94a3b8;font-size:13px;text-align:center">x${item.quantity}</td>
+      </tr>
+    `).join("");
+    await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `Order Cancelled — ${orderNumber} | RBstars`,
+      html: `
+        <div style="font-family:Inter,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;border-radius:12px;max-width:560px;margin:0 auto">
+          <div style="text-align:center;margin-bottom:28px">
+            <h1 style="color:#60a5fa;font-size:28px;margin:0 0 4px">RBstars</h1>
+            <p style="color:#64748b;margin:0;font-size:13px">Order Cancellation</p>
+          </div>
+          <div style="background:#7f1d1d22;border:1.5px solid #7f1d1d55;border-radius:12px;padding:20px;text-align:center;margin-bottom:24px">
+            <h2 style="color:#fca5a5;font-size:18px;margin:0 0 4px">Order Cancelled</h2>
+            <p style="color:#fecaca;margin:0;font-size:13px">Your order has been cancelled${amount ? ` and a refund of <strong>$${Number(amount).toFixed(2)}</strong> has been issued` : ""}</p>
+          </div>
+          <div style="background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px">
+            <p style="margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#64748b">Order Reference</p>
+            <p style="margin:0;font-size:16px;font-weight:800;color:#60a5fa">${orderNumber}</p>
+          </div>
+          ${itemRows ? `<div style="background:#1e293b;border-radius:10px;padding:16px;margin-bottom:16px"><p style="margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#64748b">Cancelled Items</p><table style="width:100%;border-collapse:collapse"><tbody>${itemRows}</tbody></table></div>` : ""}
+          <p style="color:#64748b;font-size:12px;text-align:center;margin:0">${amount ? "Refunds typically appear within 5–10 business days.<br/>" : ""}Questions? Contact us on the site.<br/>Thank you for shopping with RBstars.</p>
+        </div>
+      `,
+    });
+    logger.info(`Cancellation email sent to ${to} for order ${orderNumber}`);
+  } catch (err) {
+    logger.error("Failed to send cancellation email:", err.message);
+  }
+}
+
 module.exports = {
   sendInviteEmail,
   sendVerificationEmail,
   sendPasswordEmail,
   sendOrderConfirmationEmail,
   sendAgentReplyNotificationEmail,
+  sendRefundEmail,
+  sendCancellationEmail,
 };
