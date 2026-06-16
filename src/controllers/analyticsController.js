@@ -201,6 +201,141 @@ exports.getTopProducts = catchAsync(async (req, res) => {
   res.json({ success: true, data: { topProducts: data } });
 });
 
+exports.getSalesSummary = catchAsync(async (req, res) => {
+  const { period = "month" } = req.query;
+  const now = new Date();
+  let startDate;
+  let prevStart;
+  let prevEnd;
+
+  if (period === "today") {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    prevStart = new Date(startDate); prevStart.setDate(prevStart.getDate() - 1);
+    prevEnd = new Date(startDate); prevEnd.setMilliseconds(-1);
+  } else if (period === "week") {
+    const day = now.getDay();
+    startDate = new Date(now); startDate.setDate(now.getDate() - day); startDate.setHours(0,0,0,0);
+    prevStart = new Date(startDate); prevStart.setDate(prevStart.getDate() - 7);
+    prevEnd = new Date(startDate); prevEnd.setMilliseconds(-1);
+  } else if (period === "month") {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+  } else if (period === "year") {
+    startDate = new Date(now.getFullYear(), 0, 1);
+    prevStart = new Date(now.getFullYear() - 1, 0, 1);
+    prevEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
+  } else {
+    startDate = new Date(0);
+    prevStart = new Date(0);
+    prevEnd = new Date(0);
+  }
+
+  const [current, previous, statusBreakdown] = await Promise.all([
+    Order.aggregate([
+      { $match: { "payment.status": "succeeded", createdAt: { $gte: startDate } } },
+      { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 }, avgOrder: { $avg: "$pricing.total" } } },
+    ]),
+    Order.aggregate([
+      { $match: { "payment.status": "succeeded", createdAt: { $gte: prevStart, $lte: prevEnd } } },
+      { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 } } },
+    ]),
+    Order.aggregate([
+      { $match: { createdAt: { $gte: startDate } } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const curr = current[0] || { revenue: 0, orders: 0, avgOrder: 0 };
+  const prev = previous[0] || { revenue: 0, orders: 0 };
+  const revenueGrowth = prev.revenue > 0 ? ((curr.revenue - prev.revenue) / prev.revenue) * 100 : 0;
+  const ordersGrowth = prev.orders > 0 ? ((curr.orders - prev.orders) / prev.orders) * 100 : 0;
+
+  const breakdown = {};
+  statusBreakdown.forEach(s => { breakdown[s._id] = s.count; });
+
+  res.json({
+    success: true,
+    data: {
+      period,
+      revenue: curr.revenue,
+      orders: curr.orders,
+      avgOrderValue: curr.avgOrder,
+      revenueGrowth: Math.round(revenueGrowth * 10) / 10,
+      ordersGrowth: Math.round(ordersGrowth * 10) / 10,
+      previousRevenue: prev.revenue,
+      statusBreakdown: breakdown,
+    },
+  });
+});
+
+exports.getConversionRate = catchAsync(async (req, res) => {
+  const [totalOrders, paidOrders, abandonedCheckouts] = await Promise.all([
+    Order.countDocuments(),
+    Order.countDocuments({ "payment.status": "succeeded" }),
+    Order.countDocuments({ "payment.status": { $in: ["failed", "pending"] }, createdAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }),
+  ]);
+
+  const conversionRate = totalOrders > 0 ? (paidOrders / totalOrders) * 100 : 0;
+  const abandonmentRate = totalOrders > 0 ? (abandonedCheckouts / totalOrders) * 100 : 0;
+
+  res.json({
+    success: true,
+    data: {
+      totalOrders,
+      paidOrders,
+      abandonedCheckouts,
+      conversionRate: Math.round(conversionRate * 10) / 10,
+      abandonmentRate: Math.round(abandonmentRate * 10) / 10,
+    },
+  });
+});
+
+exports.getStockerCommissions = catchAsync(async (req, res) => {
+  const { period = "month" } = req.query;
+  const now = new Date();
+  const startDate = period === "month" ? new Date(now.getFullYear(), now.getMonth(), 1)
+    : period === "week" ? (() => { const d = new Date(now); d.setDate(d.getDate() - 7); return d; })()
+    : new Date(0);
+
+  const Product = require("../models/Product");
+  const members = await require("../models/TeamMember").find({ status: "active" }).select("email displayName commissionRate").populate("role", "name");
+
+  const commissions = await Promise.all(
+    members.map(async (member) => {
+      const products = await Product.find({ addedBy: member._id }).select("_id name salesCount price");
+      let totalRevenue = 0;
+      for (const p of products) {
+        const sales = await Order.aggregate([
+          { $match: { "payment.status": "succeeded", createdAt: { $gte: startDate }, "items.product": p._id } },
+          { $unwind: "$items" },
+          { $match: { "items.product": p._id } },
+          { $group: { _id: null, revenue: { $sum: "$items.totalPrice" } } },
+        ]);
+        totalRevenue += sales[0]?.revenue || 0;
+      }
+      const commissionEarned = (totalRevenue * (member.commissionRate || 0)) / 100;
+      return {
+        memberId: member._id,
+        name: member.displayName || member.email,
+        email: member.email,
+        commissionRate: member.commissionRate || 0,
+        productsAdded: products.length,
+        revenueGenerated: totalRevenue,
+        commissionEarned,
+        products: products.slice(0, 5),
+      };
+    })
+  );
+
+  const totals = commissions.reduce((acc, m) => ({
+    totalRevenue: acc.totalRevenue + m.revenueGenerated,
+    totalCommission: acc.totalCommission + m.commissionEarned,
+  }), { totalRevenue: 0, totalCommission: 0 });
+
+  res.json({ success: true, data: { commissions: commissions.filter(c => c.productsAdded > 0), totals, period } });
+});
+
 exports.getClaimStats = catchAsync(async (req, res) => {
   const [total, pending, active, claimed, ended] = await Promise.all([
     ClaimSession.countDocuments(),
