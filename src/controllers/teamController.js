@@ -131,6 +131,31 @@ exports.removeMember = catchAsync(async (req, res, next) => {
   res.json({ success: true, message: "Member removed from team" });
 });
 
+exports.hardDeleteMember = catchAsync(async (req, res, next) => {
+  const member = await TeamMember.findById(req.params.id);
+  if (!member) return next(new AppError("Member not found", 404));
+  if (member.status === "active") return next(new AppError("Cannot permanently delete an active member. Disable them first.", 400));
+
+  await TeamMember.findByIdAndDelete(req.params.id);
+  res.json({ success: true, message: "Member permanently deleted" });
+});
+
+exports.updateCommission = catchAsync(async (req, res, next) => {
+  const { commissionRate } = req.body;
+  if (commissionRate === undefined || commissionRate < 0 || commissionRate > 100) {
+    return next(new AppError("Commission rate must be between 0 and 100", 400));
+  }
+
+  const member = await TeamMember.findByIdAndUpdate(
+    req.params.id,
+    { commissionRate },
+    { new: true, runValidators: true }
+  ).populate({ path: "role", select: "name color" });
+
+  if (!member) return next(new AppError("Member not found", 404));
+  res.json({ success: true, data: { member: member.toSafeObject() } });
+});
+
 exports.resendInvite = catchAsync(async (req, res, next) => {
   const member = await TeamMember.findById(req.params.id).populate({ path: "role", select: "name" });
   if (!member) return next(new AppError("Member not found", 404));
