@@ -18,6 +18,30 @@ exports.createClaim = catchAsync(async (req, res, next) => {
   if (!robloxUsername?.trim()) return next(new AppError("Roblox username is required", 400));
   if (!contactEmail?.includes("@")) return next(new AppError("Valid contact email is required", 400));
 
+  const emailLower = contactEmail.trim().toLowerCase();
+
+  const existingQuery = {
+    contactEmail: emailLower,
+    status: { $in: ["pending", "active"] },
+  };
+  if (orderRef?.trim()) {
+    existingQuery.orderRef = orderRef.trim();
+  }
+
+  const existingSession = await ClaimSession.findOne(existingQuery).sort({ createdAt: -1 });
+  if (existingSession) {
+    logger.info(`Returning existing claim session ${existingSession.roomId} for ${robloxUsername} (status: ${existingSession.status})`);
+    return res.status(200).json({
+      success: true,
+      data: {
+        roomId: existingSession.roomId,
+        status: existingSession.status,
+        assignedAgent: existingSession.assignedAgent || null,
+        messages: existingSession.messages,
+      },
+    });
+  }
+
   const roomId = uuidv4();
 
   const session = await ClaimSession.create({
