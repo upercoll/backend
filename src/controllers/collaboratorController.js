@@ -21,7 +21,7 @@ async function getUnpaidSales(collaborator) {
   collabProducts.forEach(cp => { productIdMap[String(cp.product)] = cp; });
   const productIds = collabProducts.map(cp => cp.product);
 
-  const paidStatuses = ["paid", "delivering", "completed", "fulfilled", "partially_refunded"];
+  const paidStatuses = ["paid", "delivering", "completed", "partially_refunded"];
   const sinceDate = collaborator.lastPayoutAt || new Date(0);
 
   const orders = await Order.find({
@@ -367,7 +367,7 @@ exports.collabMe = catchAsync(async (req, res, next) => {
   const products = await CollaboratorProduct.find({ collaborator: collab._id, active: true })
     .populate("product", "name slug imageUrl gradient price game");
 
-  const paidStatuses = ["paid", "delivering", "completed", "fulfilled", "partially_refunded"];
+  const paidStatuses = ["paid", "delivering", "completed", "partially_refunded"];
   const productIdMap = {};
   products.forEach(cp => { productIdMap[String(cp.product?._id || cp.product)] = cp; });
   const productIds = products.map(cp => cp.product?._id || cp.product);
