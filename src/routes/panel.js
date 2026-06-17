@@ -144,8 +144,8 @@ router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 const claimCtrl = require("../controllers/claimController");
 router.get("/claims/queue", requirePermission("claim_agent"), claimCtrl.getAgentQueue);
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
-router.get("/claims/:roomId", requirePermission("monitor_agents"), claimCtrl.getSession);
-router.get("/claims/:roomId/full", requirePermission("monitor_agents"), claimCtrl.getFullSession);
+router.get("/claims/:roomId", requirePermission(["claim_agent", "monitor_agents"]), claimCtrl.getSession);
+router.get("/claims/:roomId/full", requirePermission(["claim_agent", "monitor_agents"]), claimCtrl.getFullSession);
 
 router.get("/stock/requests", requirePermission(["manage_stock", "view_stock"]), stockCtrl.listRequests);
 router.get("/stock/requests/:id", requirePermission(["manage_stock", "view_stock"]), stockCtrl.getRequest);
