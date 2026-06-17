@@ -4,7 +4,7 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { sendCancellationEmail, sendRefundEmail } = require("../config/email");
 
-const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled", "partially_refunded"];
+const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"];
 
 function addTimeline(order, action, by, details) {
   if (!order.timeline) order.timeline = [];
@@ -17,6 +17,9 @@ exports.listOrders = catchAsync(async (req, res) => {
 
   if (status) filter.status = status;
   if (payment) filter["payment.status"] = payment;
+  if (!status && !payment && !search) {
+    filter["payment.status"] = { $ne: "failed" };
+  }
   if (game) filter["items.productSnapshot.game"] = game;
   if (search) {
     filter.$or = [
@@ -80,8 +83,7 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   order.status = status;
   if (adminNotes !== undefined) order.adminNotes = adminNotes;
 
-  if (status === "fulfilled" && prevStatus !== "fulfilled") {
-    order.fulfillmentStatus = "fulfilled";
+  if (status === "completed" && prevStatus !== "completed") {
     order.fulfilledAt = new Date();
     order.fulfilledBy = req.panelUser?.email || "Admin";
   }
@@ -115,9 +117,7 @@ exports.fulfillOrder = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
-  const prevStatus = order.status;
-  order.status = "fulfilled";
-  order.fulfillmentStatus = "fulfilled";
+  order.status = "completed";
   order.fulfilledAt = new Date();
   order.fulfilledBy = req.panelUser?.email || "Admin";
 
@@ -128,7 +128,7 @@ exports.fulfillOrder = catchAsync(async (req, res, next) => {
   order.delivery.deliveredAt = new Date();
 
   const by = req.panelUser?.email || "Admin";
-  addTimeline(order, `Order marked as fulfilled`, by, trackingNumber ? `Tracking: ${trackingNumber}` : undefined);
+  addTimeline(order, `Order marked as completed`, by, trackingNumber ? `Tracking: ${trackingNumber}` : undefined);
 
   await order.save();
 
