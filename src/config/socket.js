@@ -392,7 +392,8 @@ function initSocket(server) {
         if (session.orderRef) {
           try {
             const linkedOrder = await Order.findOne({ orderNumber: session.orderRef });
-            if (linkedOrder && linkedOrder.status === "paid") {
+            const terminalStatuses = ["fulfilled", "cancelled", "refunded", "partially_refunded"];
+            if (linkedOrder && !terminalStatuses.includes(linkedOrder.status)) {
               linkedOrder.status = "fulfilled";
               linkedOrder.fulfillmentStatus = "fulfilled";
               linkedOrder.fulfilledAt = new Date();
