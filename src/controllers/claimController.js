@@ -50,7 +50,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     contactEmail: contactEmail.trim().toLowerCase(),
     orderRef: orderRef?.trim() || null,
     game: game?.trim() || null,
-    itemName: itemName?.trim() || null,
+    itemName: itemName?.trim() || (Array.isArray(items) && items[0]?.name?.trim()) || null,
     items: Array.isArray(items) ? items : [],
     messages: [
       {
@@ -156,6 +156,14 @@ exports.getSession = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId: req.params.roomId }).select("-__v");
   if (!session) return next(new AppError("Session not found", 404));
 
+  const isMonitor = req.panelUser.isOwner || req.panelUser.permissions?.includes("monitor_agents");
+  if (!isMonitor) {
+    const agentGames = req.panelUser.claimGames || [];
+    if (agentGames.length > 0 && session.game && !agentGames.includes(session.game)) {
+      return next(new AppError("You are not authorized to view this claim session", 403));
+    }
+  }
+
   res.json({
     success: true,
     data: {
@@ -185,6 +193,15 @@ exports.listClaims = catchAsync(async (req, res) => {
 exports.getFullSession = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId: req.params.roomId });
   if (!session) return next(new AppError("Session not found", 404));
+
+  const isMonitor = req.panelUser.isOwner || req.panelUser.permissions?.includes("monitor_agents");
+  if (!isMonitor) {
+    const agentGames = req.panelUser.claimGames || [];
+    if (agentGames.length > 0 && session.game && !agentGames.includes(session.game)) {
+      return next(new AppError("You are not authorized to view this claim session", 403));
+    }
+  }
+
   res.json({ success: true, data: session });
 });
 
@@ -249,7 +266,12 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
 
   const pendingFilter = { status: "pending" };
   if (agentGames.length > 0) {
-    pendingFilter.game = { $in: agentGames };
+    pendingFilter.$or = [
+      { game: { $in: agentGames } },
+      { game: null },
+      { game: { $exists: false } },
+      { game: "" },
+    ];
   }
 
   const [pending, mine, completed] = await Promise.all([
