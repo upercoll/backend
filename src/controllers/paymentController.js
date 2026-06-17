@@ -132,6 +132,31 @@ exports.createPaymentIntent = catchAsync(async (req, res, next) => {
     customer.email
   );
 
+  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+  const recentDupe = await Order.findOne({
+    "customer.email": customer.email.toLowerCase().trim(),
+    "payment.status": "pending",
+    "pricing.total": total,
+    createdAt: { $gte: fifteenMinAgo },
+  }).sort({ createdAt: -1 });
+
+  if (recentDupe && recentDupe.payment.stripePaymentIntentId) {
+    try {
+      const existingIntent = await stripe.paymentIntents.retrieve(recentDupe.payment.stripePaymentIntentId);
+      if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(existingIntent.status)) {
+        return res.json({
+          success: true,
+          data: {
+            clientSecret: existingIntent.client_secret,
+            orderId: recentDupe._id,
+            orderNumber: recentDupe.orderNumber,
+            total,
+          },
+        });
+      }
+    } catch {}
+  }
+
   const order = await Order.create({
     customer: {
       email: customer.email,
