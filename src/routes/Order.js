@@ -90,7 +90,7 @@ const orderSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "fulfilled", "partially_refunded"],
+      enum: ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"],
       default: "pending",
     },
 
@@ -98,11 +98,6 @@ const orderSchema = new mongoose.Schema(
     refundReason: { type: String },
     refundedAt: { type: Date },
 
-    fulfillmentStatus: {
-      type: String,
-      enum: ["unfulfilled", "partial", "fulfilled"],
-      default: "unfulfilled",
-    },
     fulfilledAt: { type: Date },
     fulfilledBy: { type: String },
 
