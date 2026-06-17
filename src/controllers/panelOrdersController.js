@@ -18,14 +18,6 @@ exports.listOrders = catchAsync(async (req, res) => {
 
   if (status) filter.status = status;
   if (payment) filter["payment.status"] = payment;
-  if (!status && !payment && !search) {
-    const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000);
-    filter.$or = [
-      { "payment.status": "succeeded" },
-      { "payment.status": { $nin: ["failed", "pending"] } },
-      { "payment.status": "pending", createdAt: { $gte: thirtyMinsAgo } },
-    ];
-  }
   if (game) filter["items.productSnapshot.game"] = game;
   if (search) {
     filter.$or = [
