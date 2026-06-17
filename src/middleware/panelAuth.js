@@ -70,8 +70,11 @@ function requirePermission(permission) {
   return (req, res, next) => {
     if (!req.panelUser) return next(new AppError("Not authenticated", 401));
     if (req.panelUser.isOwner) return next();
-    if (!req.panelUser.permissions.includes(permission)) {
-      return next(new AppError(`Missing permission: ${permission}`, 403));
+    const userPerms = req.panelUser.permissions || [];
+    const required = Array.isArray(permission) ? permission : [permission];
+    const hasPermission = required.some((p) => userPerms.includes(p));
+    if (!hasPermission) {
+      return next(new AppError(`Missing permission: ${required[0]}`, 403));
     }
     next();
   };
