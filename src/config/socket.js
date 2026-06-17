@@ -392,25 +392,24 @@ function initSocket(server) {
         if (session.orderRef) {
           try {
             const linkedOrder = await Order.findOne({ orderNumber: session.orderRef });
-            const terminalStatuses = ["fulfilled", "cancelled", "refunded", "partially_refunded"];
+            const terminalStatuses = ["completed", "cancelled", "refunded", "partially_refunded"];
             if (linkedOrder && !terminalStatuses.includes(linkedOrder.status)) {
-              linkedOrder.status = "fulfilled";
-              linkedOrder.fulfillmentStatus = "fulfilled";
+              linkedOrder.status = "completed";
               linkedOrder.fulfilledAt = new Date();
               linkedOrder.fulfilledBy = session.assignedAgent?.name || "Claim Agent";
               linkedOrder.delivery.status = "delivered";
               linkedOrder.delivery.deliveredAt = new Date();
               if (!linkedOrder.timeline) linkedOrder.timeline = [];
               linkedOrder.timeline.push({
-                action: "Order auto-fulfilled via claim chat",
+                action: "Order auto-completed via claim chat",
                 by: session.assignedAgent?.name || "Claim Agent",
                 details: `Claim session ${session.roomId} marked as delivered`,
                 timestamp: new Date(),
               });
               await linkedOrder.save();
-              io.to("admin-room").emit("admin:order_fulfilled", {
+              io.to("admin-room").emit("admin:order_completed", {
                 orderNumber: session.orderRef,
-                fulfilledBy: session.assignedAgent?.name || "Claim Agent",
+                completedBy: session.assignedAgent?.name || "Claim Agent",
               });
             }
           } catch (orderErr) {
