@@ -14,6 +14,13 @@ const orderItemSchema = new mongoose.Schema({
   totalPrice: { type: Number, required: true },
 });
 
+const timelineSchema = new mongoose.Schema({
+  action: { type: String, required: true },
+  by: { type: String, default: "System" },
+  details: { type: String },
+  timestamp: { type: Date, default: Date.now },
+});
+
 const orderSchema = new mongoose.Schema(
   {
     orderNumber: {
@@ -57,25 +64,42 @@ const orderSchema = new mongoose.Schema(
         default: "pending",
       },
       deliveredAt: { type: Date },
+      trackingNumber: { type: String },
+      carrier: { type: String },
       notes: { type: String },
     },
 
     status: {
       type: String,
-      enum: ["pending", "paid", "delivering", "completed", "cancelled", "refunded"],
+      enum: ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"],
       default: "pending",
     },
 
+    fulfilledAt: { type: Date },
+    fulfilledBy: { type: String },
+
+    timeline: [timelineSchema],
+    tags: [{ type: String }],
+
+    adminNotes: { type: String },
+    notes: { type: String },
+
+    refundAmount: { type: Number, default: 0 },
+    refundReason: { type: String },
+    refundedAt: { type: Date },
+
     ipAddress: { type: String },
     userAgent: { type: String },
-    refundReason: { type: String },
-    adminNotes: { type: String },
+
+    source: { type: String, default: "Online Store" },
+    riskLevel: { type: String, enum: ["low", "medium", "high"], default: "low" },
   },
   { timestamps: true }
 );
 
 orderSchema.index({ "customer.email": 1 });
 orderSchema.index({ status: 1 });
+orderSchema.index({ "payment.status": 1 });
 orderSchema.index({ "payment.stripePaymentIntentId": 1 });
 orderSchema.index({ createdAt: -1 });
 
