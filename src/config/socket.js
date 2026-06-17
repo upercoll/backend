@@ -110,6 +110,18 @@ function initSocket(server) {
 
     socket.on("claim:agent_browse", async ({ roomId }) => {
       if (!roomId) return;
+      try {
+        const agentGames = socket.agentGames;
+        if (Array.isArray(agentGames) && agentGames.length > 0) {
+          const session = await ClaimSession.findOne({ roomId }).select("game");
+          if (session && session.game && !agentGames.includes(session.game)) {
+            socket.emit("claim:error", { message: "You are not authorized to view this claim session" });
+            return;
+          }
+        }
+      } catch (err) {
+        logger.error("claim:agent_browse game check error:", err);
+      }
       socket.join(`claim:${roomId}`);
       logger.info(`Agent browsing claim room: ${roomId}`);
     });
@@ -124,6 +136,12 @@ function initSocket(server) {
       try {
         const session = await ClaimSession.findOne({ roomId });
         if (!session) return;
+
+        const agentGames = socket.agentGames;
+        if (Array.isArray(agentGames) && agentGames.length > 0 && session.game && !agentGames.includes(session.game)) {
+          socket.emit("claim:error", { message: "You are not authorized to handle this claim session" });
+          return;
+        }
 
         if (session.status === "pending") {
           session.status = "active";
@@ -438,6 +456,7 @@ function initSocket(server) {
 
       socket.panelUserId = agentId;
       socket.agentName = agentName;
+      socket.agentGames = games;
       socket.join("agent-queue-room");
 
       agentSockets.set(agentId, socket.id);
@@ -517,14 +536,7 @@ function notifyNewClaim(sessionData) {
   let agents = getAgentsForGame(game);
 
   if (agents.length === 0) {
-    const seen = new Set();
-    const all = [];
-    for (const queue of agentQueues.values()) {
-      for (const id of queue) {
-        if (!seen.has(id)) { seen.add(id); all.push(id); }
-      }
-    }
-    agents = all;
+    agents = [...agentSockets.values()];
     logger.info(`No agents for game "${game}", falling back to all ${agents.length} available agents`);
   }
 
