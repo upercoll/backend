@@ -2,6 +2,7 @@ const Order = require("../models/Order");
 const ClaimSession = require("../models/ClaimSession");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const stripe = require("../config/stripe");
 const { sendCancellationEmail, sendRefundEmail } = require("../config/email");
 
 const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"];
@@ -18,7 +19,12 @@ exports.listOrders = catchAsync(async (req, res) => {
   if (status) filter.status = status;
   if (payment) filter["payment.status"] = payment;
   if (!status && !payment && !search) {
-    filter["payment.status"] = { $ne: "failed" };
+    const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000);
+    filter.$or = [
+      { "payment.status": "succeeded" },
+      { "payment.status": { $nin: ["failed", "pending"] } },
+      { "payment.status": "pending", createdAt: { $gte: thirtyMinsAgo } },
+    ];
   }
   if (game) filter["items.productSnapshot.game"] = game;
   if (search) {
@@ -75,13 +81,31 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
 
   const isPaid = order.payment && order.payment.status === "succeeded";
 
-  if (status === "cancelled" && !isPaid) {
-    return next(new AppError("Cannot cancel an unpaid order. Only paid orders can be cancelled.", 400));
+  if (status === "refunded" && !isPaid) {
+    return next(new AppError("Cannot refund an order that has not been paid.", 400));
+  }
+
+  let stripeRefundAmount = null;
+  if (status === "cancelled" && isPaid && order.payment.stripePaymentIntentId) {
+    try {
+      const refund = await stripe.refunds.create({
+        payment_intent: order.payment.stripePaymentIntentId,
+      });
+      stripeRefundAmount = refund.amount / 100;
+    } catch (stripeErr) {
+      console.error("Stripe refund failed during cancellation:", stripeErr.message);
+    }
   }
 
   const prevStatus = order.status;
   order.status = status;
   if (adminNotes !== undefined) order.adminNotes = adminNotes;
+
+  if (status === "cancelled" && isPaid && stripeRefundAmount !== null) {
+    order.payment.status = "refunded";
+    order.refundAmount = stripeRefundAmount;
+    order.refundedAt = new Date();
+  }
 
   if (status === "completed" && prevStatus !== "completed") {
     order.fulfilledAt = new Date();
@@ -89,15 +113,19 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   }
 
   const by = req.panelUser?.email || "Admin";
-  addTimeline(order, `Status changed from "${prevStatus}" to "${status}"`, by);
+  const timelineDetails = status === "cancelled" && stripeRefundAmount !== null
+    ? `Full refund of $${stripeRefundAmount.toFixed(2)} issued to customer`
+    : undefined;
+  addTimeline(order, `Status changed from "${prevStatus}" to "${status}"`, by, timelineDetails);
 
   await order.save();
 
-  if (status === "cancelled" && isPaid) {
+  if (status === "cancelled") {
     try {
       await sendCancellationEmail({
         to: order.customer.email,
         orderNumber: order.orderNumber,
+        amount: stripeRefundAmount,
         items: (order.items || []).map(item => ({
           name: item.productSnapshot?.name || "Item",
           quantity: item.quantity,
@@ -150,6 +178,17 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
 
   const isPartial = partial || amount < order.pricing.total;
 
+  if (order.payment.stripePaymentIntentId) {
+    try {
+      await stripe.refunds.create({
+        payment_intent: order.payment.stripePaymentIntentId,
+        amount: Math.round(amount * 100),
+      });
+    } catch (stripeErr) {
+      return next(new AppError(`Stripe refund failed: ${stripeErr.message}`, 500));
+    }
+  }
+
   const prevStatus = order.status;
   order.status = isPartial ? "partially_refunded" : "refunded";
   order.payment.status = "refunded";
@@ -158,7 +197,7 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
   order.refundedAt = new Date();
 
   const by = req.panelUser?.email || "Admin";
-  const details = `$${amount.toFixed(2)} refunded${reason ? ` — Reason: ${reason}` : ""}${restockItems ? " — Inventory restocked" : ""}`;
+  const details = `$${amount.toFixed(2)} refunded via Stripe${reason ? ` — Reason: ${reason}` : ""}${restockItems ? " — Inventory restocked" : ""}`;
   addTimeline(order, isPartial ? "Partial refund issued" : "Order refunded", by, details);
 
   await order.save();
@@ -220,7 +259,7 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
 
   if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
 
-  if (status === "cancelled" || status === "refunded" || status === "partially_refunded") {
+  if (status === "refunded" || status === "partially_refunded") {
     const unpaidOrders = await Order.find({ _id: { $in: idList }, "payment.status": { $ne: "succeeded" } }).countDocuments();
     if (unpaidOrders > 0) {
       return next(new AppError(`Cannot bulk ${status} orders that haven't been paid. Please filter to paid orders only.`, 400));
