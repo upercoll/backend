@@ -221,6 +221,13 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
   if (!order) return next(new AppError("Order not found", 404));
 
   if (intent.status === "succeeded") {
+    if (order.payment.status === "succeeded") {
+      return res.json({
+        success: true,
+        data: { orderNumber: order.orderNumber, status: "succeeded", alreadyProcessed: true },
+      });
+    }
+
     order.payment.status = "succeeded";
     order.payment.paidAt = new Date();
     order.status = "paid";
@@ -230,7 +237,7 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
     order.items.forEach(({ product, quantity }) => {
       Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
       Product.findOneAndUpdate(
-        { _id: product, stock: { $gte: 0 } },
+        { _id: product, stock: { $gt: 0 } },
         { $inc: { stock: -quantity } },
         { new: true }
       ).then(p => {
@@ -333,7 +340,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
         order.items.forEach(({ product, quantity }) => {
           Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
           Product.findOneAndUpdate(
-            { _id: product, stock: { $gte: 0 } },
+            { _id: product, stock: { $gt: 0 } },
             { $inc: { stock: -quantity } },
             { new: true }
           ).then(p => {
