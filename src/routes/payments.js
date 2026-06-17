@@ -6,6 +6,7 @@ router.post("/webhook", ctrl.webhook);
 
 router.post("/create-intent", paymentLimiter, ctrl.createPaymentIntent);
 router.post("/confirm", paymentLimiter, ctrl.confirmPayment);
+router.post("/confirm-payment", paymentLimiter, ctrl.confirmPayment);
 
 router.post("/paypal-intent", paymentLimiter, ctrl.createPaypalPaymentIntent);
 
