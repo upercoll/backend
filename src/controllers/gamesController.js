@@ -130,10 +130,11 @@ exports.deleteGame = catchAsync(async (req, res, next) => {
     return next(new AppError(`Cannot delete game with ${productCount} active products. Remove them first.`, 400));
   }
 
-  await deleteFromCloudinary(game.imagePublicId);
-  await deleteFromCloudinary(game.bannerPublicId);
-  game.active = false;
-  await game.save();
+  if (game.imagePublicId) await deleteFromCloudinary(game.imagePublicId);
+  if (game.bannerPublicId) await deleteFromCloudinary(game.bannerPublicId);
 
-  res.json({ success: true, message: "Game deactivated" });
+  await Category.deleteMany({ game: game.slug });
+  await Game.deleteOne({ _id: game._id });
+
+  res.json({ success: true, message: "Game deleted" });
 });
