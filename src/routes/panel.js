@@ -62,6 +62,7 @@ router.delete("/team/:id/hard-delete", requirePermission(["remove_team", "manage
 router.post("/team/:id/resend-invite", requirePermission(["invite_team", "manage_team"]), teamCtrl.resendInvite);
 
 router.get("/orders", requirePermission(["view_orders", "manage_orders"]), panelOrdersCtrl.listOrders);
+router.post("/orders/sync-stripe", requirePermission("manage_orders"), panelOrdersCtrl.syncStripePayments);
 router.patch("/orders/bulk-status", requirePermission(["update_order_status", "manage_orders"]), panelOrdersCtrl.bulkUpdateStatus);
 router.get("/orders/:id", requirePermission(["view_orders", "manage_orders"]), panelOrdersCtrl.getOrder);
 router.patch("/orders/:id/status", requirePermission(["update_order_status", "manage_orders"]), panelOrdersCtrl.updateOrderStatus);
