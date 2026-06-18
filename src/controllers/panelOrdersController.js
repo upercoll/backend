@@ -15,21 +15,37 @@ function addTimeline(order, action, by, details) {
 exports.listOrders = catchAsync(async (req, res) => {
   const { status, payment, page = 1, limit = 20, search, game } = req.query;
   const filter = {};
+  const andClauses = [];
 
   if (status) filter.status = status;
+
   if (payment) {
     filter["payment.status"] = payment;
   } else {
-    filter["payment.status"] = { $ne: "failed" };
+    andClauses.push({
+      $or: [
+        { "payment.status": "succeeded" },
+        {
+          "payment.stripePaymentIntentId": { $exists: true, $ne: null },
+          "payment.status": { $ne: "failed" },
+        },
+      ],
+    });
   }
+
   if (game) filter["items.productSnapshot.game"] = game;
+
   if (search) {
-    filter.$or = [
-      { orderNumber: { $regex: search, $options: "i" } },
-      { "customer.email": { $regex: search, $options: "i" } },
-      { "customer.robloxUsername": { $regex: search, $options: "i" } },
-    ];
+    andClauses.push({
+      $or: [
+        { orderNumber: { $regex: search, $options: "i" } },
+        { "customer.email": { $regex: search, $options: "i" } },
+        { "customer.robloxUsername": { $regex: search, $options: "i" } },
+      ],
+    });
   }
+
+  if (andClauses.length > 0) filter.$and = andClauses;
 
   const skip = (parseInt(page) - 1) * parseInt(limit);
   const [orders, total] = await Promise.all([
