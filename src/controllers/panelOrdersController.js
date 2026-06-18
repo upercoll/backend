@@ -17,7 +17,11 @@ exports.listOrders = catchAsync(async (req, res) => {
   const filter = {};
 
   if (status) filter.status = status;
-  if (payment) filter["payment.status"] = payment;
+  if (payment) {
+    filter["payment.status"] = payment;
+  } else {
+    filter["payment.status"] = { $nin: ["pending", "failed"] };
+  }
   if (game) filter["items.productSnapshot.game"] = game;
   if (search) {
     filter.$or = [
