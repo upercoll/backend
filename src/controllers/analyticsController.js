@@ -200,6 +200,8 @@ exports.getTopProducts = catchAsync(async (req, res) => {
         _id: "$items.product",
         name: { $first: "$items.productSnapshot.name" },
         game: { $first: "$items.productSnapshot.game" },
+        imageUrl: { $first: "$items.productSnapshot.imageUrl" },
+        gradient: { $first: "$items.productSnapshot.gradient" },
         totalSold: { $sum: "$items.quantity" },
         revenue: { $sum: "$items.totalPrice" },
       },
