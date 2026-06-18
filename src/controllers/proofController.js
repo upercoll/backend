@@ -7,7 +7,8 @@ const catchAsync = require("../utils/catchAsync");
 const { getIO } = require("../config/socket");
 
 exports.submitProof = catchAsync(async (req, res, next) => {
-  if (!req.file) return next(new AppError("Proof image is required", 400));
+  const files = req.files && req.files.length ? req.files : req.file ? [req.file] : [];
+  if (!files.length) return next(new AppError("At least one proof image is required", 400));
 
   const { roomId, estimatedDelivery, notes } = req.body;
   if (!roomId || !estimatedDelivery) {
@@ -17,10 +18,17 @@ exports.submitProof = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId });
   if (!session) return next(new AppError("Claim session not found", 404));
 
-  const result = await uploadToCloudinary(req.file.buffer, {
-    folder: "rbstars/proofs",
-    transformation: [{ width: 1200, quality: "auto" }],
-  });
+  const uploads = await Promise.all(
+    files.map(f =>
+      uploadToCloudinary(f.buffer, {
+        folder: "rbstars/proofs",
+        transformation: [{ width: 1200, quality: "auto" }],
+      })
+    )
+  );
+
+  const proofImageUrls = uploads.map(u => u.secure_url);
+  const proofImagePublicIds = uploads.map(u => u.public_id);
 
   const proof = await ProofOfDelivery.create({
     claimSessionId: session._id,
@@ -28,8 +36,10 @@ exports.submitProof = catchAsync(async (req, res, next) => {
     orderRef: session.orderRef,
     agentId: req.panelUser.id,
     agentName: req.panelUser.member?.displayName || req.panelUser.email,
-    proofImageUrl: result.secure_url,
-    proofImagePublicId: result.public_id,
+    proofImageUrl: proofImageUrls[0],
+    proofImagePublicId: proofImagePublicIds[0],
+    proofImageUrls,
+    proofImagePublicIds,
     estimatedDelivery,
     notes,
     customerEmail: session.contactEmail,
