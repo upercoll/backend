@@ -86,7 +86,7 @@ exports.updateGame = catchAsync(async (req, res, next) => {
   const game = await Game.findOne({ slug: req.params.slug });
   if (!game) return next(new AppError("Game not found", 404));
 
-  const { name, description, gradientFrom, gradientTo, sortOrder, featured, active, claimTeam } = req.body;
+  const { name, description, gradientFrom, gradientTo, sortOrder, featured, active, claimTeam, claimTime, claimSchedule } = req.body;
 
   if (name) game.name = name.trim();
   if (description !== undefined) game.description = description;
@@ -96,6 +96,13 @@ exports.updateGame = catchAsync(async (req, res, next) => {
   if (featured !== undefined) game.featured = featured === "true" || featured === true;
   if (active !== undefined) game.active = active === "true" || active === true;
   if (claimTeam !== undefined) game.claimTeam = claimTeam;
+  if (claimTime !== undefined) game.claimTime = Math.max(0, parseInt(claimTime) || 0);
+  if (claimSchedule !== undefined) {
+    try {
+      const parsed = typeof claimSchedule === "string" ? JSON.parse(claimSchedule) : claimSchedule;
+      if (Array.isArray(parsed)) game.claimSchedule = parsed;
+    } catch {}
+  }
 
   if (req.files?.image?.[0]) {
     await deleteFromCloudinary(game.imagePublicId);
