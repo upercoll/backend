@@ -6,6 +6,15 @@ const TeamMember = require("../models/TeamMember");
 const AgentStats = require("../models/AgentStats");
 const catchAsync = require("../utils/catchAsync");
 
+const PAID_STATUSES = ["paid", "delivering", "completed", "refunded", "partially_refunded"];
+
+const PAID_FILTER = {
+  $or: [
+    { "payment.status": "succeeded" },
+    { status: { $in: PAID_STATUSES } },
+  ],
+};
+
 exports.getDashboard = catchAsync(async (req, res) => {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -28,25 +37,25 @@ exports.getDashboard = catchAsync(async (req, res) => {
     onlineAgents,
   ] = await Promise.all([
     Order.aggregate([
-      { $match: { "payment.status": "succeeded" } },
+      { $match: PAID_FILTER },
       { $group: { _id: null, total: { $sum: "$pricing.total" } } },
     ]),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded", createdAt: { $gte: startOfMonth } } },
+      { $match: { ...PAID_FILTER, createdAt: { $gte: startOfMonth } } },
       { $group: { _id: null, total: { $sum: "$pricing.total" } } },
     ]),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded", createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
+      { $match: { ...PAID_FILTER, createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
       { $group: { _id: null, total: { $sum: "$pricing.total" } } },
     ]),
-    Order.countDocuments({ "payment.status": "succeeded", createdAt: { $gte: startOfToday } }),
-    Order.countDocuments({ "payment.status": "succeeded", createdAt: { $gte: startOfMonth } }),
-    Order.countDocuments({ "payment.status": "succeeded" }),
+    Order.countDocuments({ ...PAID_FILTER, createdAt: { $gte: startOfToday } }),
+    Order.countDocuments({ ...PAID_FILTER, createdAt: { $gte: startOfMonth } }),
+    Order.countDocuments(PAID_FILTER),
     ClaimSession.countDocuments({ status: "pending" }),
     ClaimSession.countDocuments({ status: "active" }),
     Product.countDocuments({ active: true }),
     Customer.countDocuments({ active: { $ne: false } }),
-    Order.find({ "payment.status": "succeeded" })
+    Order.find(PAID_FILTER)
       .sort({ createdAt: -1 })
       .limit(10)
       .select("orderNumber customer items pricing status delivery createdAt"),
@@ -88,7 +97,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
     const data = await Order.aggregate([
       {
         $match: {
-          "payment.status": "succeeded",
+          ...PAID_FILTER,
           createdAt: {
             $gte: new Date(targetYear, 0, 1),
             $lt: new Date(targetYear + 1, 0, 1),
@@ -130,7 +139,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
   const data = await Order.aggregate([
     {
       $match: {
-        "payment.status": "succeeded",
+        ...PAID_FILTER,
         createdAt: { $gte: days[0], $lte: now },
       },
     },
@@ -167,7 +176,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
 
 exports.getOrdersByGame = catchAsync(async (req, res) => {
   const data = await Order.aggregate([
-    { $match: { "payment.status": "succeeded" } },
+    { $match: PAID_FILTER },
     { $unwind: "$items" },
     {
       $group: {
@@ -184,7 +193,7 @@ exports.getOrdersByGame = catchAsync(async (req, res) => {
 
 exports.getTopProducts = catchAsync(async (req, res) => {
   const data = await Order.aggregate([
-    { $match: { "payment.status": "succeeded" } },
+    { $match: PAID_FILTER },
     { $unwind: "$items" },
     {
       $group: {
@@ -233,11 +242,11 @@ exports.getSalesSummary = catchAsync(async (req, res) => {
 
   const [current, previous, statusBreakdown] = await Promise.all([
     Order.aggregate([
-      { $match: { "payment.status": "succeeded", createdAt: { $gte: startDate } } },
+      { $match: { ...PAID_FILTER, createdAt: { $gte: startDate } } },
       { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 }, avgOrder: { $avg: "$pricing.total" } } },
     ]),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded", createdAt: { $gte: prevStart, $lte: prevEnd } } },
+      { $match: { ...PAID_FILTER, createdAt: { $gte: prevStart, $lte: prevEnd } } },
       { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 } } },
     ]),
     Order.aggregate([
@@ -272,8 +281,12 @@ exports.getSalesSummary = catchAsync(async (req, res) => {
 exports.getConversionRate = catchAsync(async (req, res) => {
   const [totalOrders, paidOrders, abandonedCheckouts] = await Promise.all([
     Order.countDocuments(),
-    Order.countDocuments({ "payment.status": "succeeded" }),
-    Order.countDocuments({ "payment.status": { $in: ["failed", "pending"] }, createdAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }),
+    Order.countDocuments(PAID_FILTER),
+    Order.countDocuments({
+      "payment.stripePaymentIntentId": { $exists: true, $ne: null },
+      "payment.status": "failed",
+      createdAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+    }),
   ]);
 
   const conversionRate = totalOrders > 0 ? (paidOrders / totalOrders) * 100 : 0;
@@ -307,7 +320,7 @@ exports.getStockerCommissions = catchAsync(async (req, res) => {
       let totalRevenue = 0;
       for (const p of products) {
         const sales = await Order.aggregate([
-          { $match: { "payment.status": "succeeded", createdAt: { $gte: startDate }, "items.product": p._id } },
+          { $match: { ...PAID_FILTER, createdAt: { $gte: startDate }, "items.product": p._id } },
           { $unwind: "$items" },
           { $match: { "items.product": p._id } },
           { $group: { _id: null, revenue: { $sum: "$items.totalPrice" } } },
