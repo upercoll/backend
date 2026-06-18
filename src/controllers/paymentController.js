@@ -231,7 +231,7 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
     order.payment.status = "succeeded";
     order.payment.paidAt = new Date();
     order.status = "paid";
-    order.delivery.status = "in_progress";
+    order.set("delivery.status", "in_progress");
     await order.save();
 
     order.items.forEach(({ product, quantity }) => {
@@ -335,7 +335,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
         order.payment.status = "succeeded";
         order.payment.paidAt = new Date();
         order.status = "paid";
-        order.delivery.status = "in_progress";
+        order.set("delivery.status", "in_progress");
         await order.save();
         order.items.forEach(({ product, quantity }) => {
           Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
