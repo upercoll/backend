@@ -50,7 +50,11 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     contactEmail: contactEmail.trim().toLowerCase(),
     orderRef: orderRef?.trim() || null,
     game: game?.trim() || null,
-    itemName: itemName?.trim() || (Array.isArray(items) && items[0]?.name?.trim()) || null,
+    itemName: (itemName?.trim() && itemName.trim().toLowerCase() !== "general claim")
+      ? itemName.trim()
+      : (Array.isArray(items) && items[0]?.name?.trim() && items[0].name.trim().toLowerCase() !== "general claim")
+        ? items[0].name.trim()
+        : null,
     items: Array.isArray(items) ? items : [],
     messages: [
       {
@@ -202,7 +206,7 @@ exports.getFullSession = catchAsync(async (req, res, next) => {
     }
   }
 
-  res.json({ success: true, data: session });
+  res.json({ success: true, data: sanitizeSession(session) });
 });
 
 exports.updateStatus = catchAsync(async (req, res, next) => {
@@ -259,6 +263,17 @@ exports.getActiveClaims = catchAsync(async (req, res) => {
   res.json({ success: true, data: { sessions } });
 });
 
+function sanitizeSession(s) {
+  const obj = s.toObject ? s.toObject() : { ...s };
+  if (obj.itemName && obj.itemName.trim().toLowerCase() === "general claim") obj.itemName = null;
+  if (Array.isArray(obj.items)) {
+    obj.items = obj.items.filter(
+      i => i.name && i.name.trim().toLowerCase() !== "general claim"
+    );
+  }
+  return obj;
+}
+
 exports.getAgentQueue = catchAsync(async (req, res) => {
   const panelUser = req.panelUser;
   const agentId = panelUser?._id || panelUser?.id;
@@ -297,7 +312,11 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
 
   res.json({
     success: true,
-    data: { pending, mine, completed },
+    data: {
+      pending:   pending.map(sanitizeSession),
+      mine:      mine.map(sanitizeSession),
+      completed: completed.map(sanitizeSession),
+    },
   });
 });
 
