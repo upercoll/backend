@@ -20,7 +20,7 @@ exports.listOrders = catchAsync(async (req, res) => {
   if (payment) {
     filter["payment.status"] = payment;
   } else {
-    filter["payment.status"] = { $nin: ["pending", "failed"] };
+    filter["payment.status"] = { $ne: "failed" };
   }
   if (game) filter["items.productSnapshot.game"] = game;
   if (search) {
@@ -301,4 +301,51 @@ exports.getClaimChat = catchAsync(async (req, res, next) => {
   if (!claim) return next(new AppError("No claim session found for this order", 404));
 
   res.json({ success: true, data: { claimSession: claim } });
+});
+
+exports.syncStripePayments = catchAsync(async (req, res) => {
+  const ordersToCheck = await Order.find({
+    "payment.stripePaymentIntentId": { $exists: true, $ne: null },
+    "payment.status": { $nin: ["succeeded", "refunded"] },
+  }).select("_id orderNumber payment status items");
+
+  let fixed = 0;
+  let alreadyFailed = 0;
+  let stillPending = 0;
+  const fixedOrders = [];
+
+  for (const order of ordersToCheck) {
+    try {
+      const intent = await stripe.paymentIntents.retrieve(order.payment.stripePaymentIntentId);
+
+      if (intent.status === "succeeded") {
+        order.payment.status = "succeeded";
+        order.payment.paidAt = order.payment.paidAt || new Date(intent.created * 1000);
+        order.status = "paid";
+        if (!order.delivery) order.delivery = {};
+        order.set("delivery.status", "in_progress");
+        await order.save();
+        fixed++;
+        fixedOrders.push(order.orderNumber);
+      } else if (intent.status === "canceled" || intent.status === "payment_failed") {
+        alreadyFailed++;
+      } else {
+        stillPending++;
+      }
+    } catch (err) {
+      stillPending++;
+    }
+  }
+
+  res.json({
+    success: true,
+    message: `Stripe sync complete. Fixed ${fixed} orders.`,
+    data: {
+      checked: ordersToCheck.length,
+      fixed,
+      alreadyFailed,
+      stillPending,
+      fixedOrders,
+    },
+  });
 });
