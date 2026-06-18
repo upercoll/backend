@@ -35,10 +35,15 @@ async function getUnpaidSales(collaborator) {
   let total = 0;
 
   for (const order of orders) {
+    const subtotal = order.pricing?.subtotal || 0;
+    const orderTotal = order.pricing?.total || subtotal;
+    const discountRatio = subtotal > 0 ? orderTotal / subtotal : 1;
+
     for (const item of order.items) {
       const cp = productIdMap[String(item.product)];
       if (!cp) continue;
-      const earnings = parseFloat(((item.unitPrice * item.quantity) * (cp.cut / 100)).toFixed(2));
+      const salePrice = parseFloat((item.totalPrice * discountRatio).toFixed(2));
+      const earnings = parseFloat((salePrice * (cp.cut / 100)).toFixed(2));
       total += earnings;
       sales.push({
         orderId: String(order._id),
@@ -49,7 +54,8 @@ async function getUnpaidSales(collaborator) {
         sku: item.productSnapshot?.sku || "-",
         unitPrice: item.unitPrice,
         quantity: item.quantity,
-        orderTotal: item.totalPrice,
+        salePrice,
+        orderTotal: salePrice,
         cut: cp.cut,
         earnings,
       });
@@ -384,10 +390,15 @@ exports.collabMe = catchAsync(async (req, res, next) => {
   const sinceDate = collab.lastPayoutAt || new Date(0);
 
   for (const order of orders) {
+    const subtotal = order.pricing?.subtotal || 0;
+    const orderTotal = order.pricing?.total || subtotal;
+    const discountRatio = subtotal > 0 ? orderTotal / subtotal : 1;
+
     for (const item of order.items) {
       const cp = productIdMap[String(item.product)];
       if (!cp) continue;
-      const earnings = parseFloat(((item.unitPrice * item.quantity) * (cp.cut / 100)).toFixed(2));
+      const salePrice = parseFloat((item.totalPrice * discountRatio).toFixed(2));
+      const earnings = parseFloat((salePrice * (cp.cut / 100)).toFixed(2));
       totalEarnings += earnings;
       const isUnpaid = order.createdAt > sinceDate;
       if (isUnpaid) unpaidEarnings += earnings;
@@ -398,6 +409,7 @@ exports.collabMe = catchAsync(async (req, res, next) => {
         productName: item.productSnapshot?.name || cp.productName || "Unknown",
         unitPrice: item.unitPrice,
         quantity: item.quantity,
+        salePrice,
         earnings,
         isPaid: !isUnpaid,
       });
