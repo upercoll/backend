@@ -25,6 +25,13 @@ const gameSchema = new mongoose.Schema(
     claimTeam: { type: String, trim: true },
     totalProducts: { type: Number, default: 0 },
     totalSales: { type: Number, default: 0 },
+    claimTime: { type: Number, default: 0 },
+    claimSchedule: [{
+      label: { type: String, default: "" },
+      from: { type: String },
+      to: { type: String },
+      minutes: { type: Number, default: 0 },
+    }],
   },
   { timestamps: true }
 );
