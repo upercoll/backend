@@ -103,7 +103,7 @@ router.post("/site-content/:key/reset", requirePermission("edit_site_content"), 
 router.get("/proof", requirePermission("view_pod"), proofCtrl.listProofs);
 router.get("/proof/:id", requirePermission("view_pod"), proofCtrl.getProof);
 router.patch("/proof/:id/notes", ownerOnly, proofCtrl.addOwnerNotes);
-router.post("/proof/submit", requirePermission("claim_agent"), upload.single("proof"), proofCtrl.submitProof);
+router.post("/proof/submit", requirePermission("claim_agent"), upload.array("proofs", 5), proofCtrl.submitProof);
 
 router.get("/agent-stats", requirePermission("monitor_agents"), agentStatsCtrl.getAllAgentStats);
 router.get("/agent-stats/me", requirePermission("claim_agent"), agentStatsCtrl.getMyStats);
