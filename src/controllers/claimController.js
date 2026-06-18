@@ -44,6 +44,36 @@ exports.createClaim = catchAsync(async (req, res, next) => {
 
   const roomId = uuidv4();
 
+  const Game = require("../models/Game");
+  let claimTimeMsg = null;
+  if (game?.trim()) {
+    try {
+      const gameDoc = await Game.findOne({ slug: game.trim().toLowerCase() }).select("name claimTime claimSchedule");
+      if (gameDoc) {
+        let effectiveMins = gameDoc.claimTime || 0;
+        if (gameDoc.claimSchedule?.length) {
+          const now = new Date();
+          const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+          const slot = gameDoc.claimSchedule.find(s => {
+            if (!s.from || !s.to || !s.minutes) return false;
+            return s.from <= s.to ? (hhmm >= s.from && hhmm <= s.to) : (hhmm >= s.from || hhmm <= s.to);
+          });
+          if (slot) effectiveMins = slot.minutes;
+        }
+        if (effectiveMins > 0) {
+          claimTimeMsg = `\u23F1 Claim time for ${gameDoc.name}: up to ${effectiveMins} minute${effectiveMins !== 1 ? "s" : ""}. An agent will join you shortly!`;
+        }
+      }
+    } catch {}
+  }
+
+  const initMessages = [
+    { sender: "system", text: `${robloxUsername.trim()} has joined the chat`, senderName: "System" },
+  ];
+  if (claimTimeMsg) {
+    initMessages.push({ sender: "system", text: claimTimeMsg, senderName: "System" });
+  }
+
   const session = await ClaimSession.create({
     roomId,
     robloxUsername: robloxUsername.trim(),
@@ -56,13 +86,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
         ? items[0].name.trim()
         : null,
     items: Array.isArray(items) ? items : [],
-    messages: [
-      {
-        sender: "system",
-        text: `${robloxUsername.trim()} has joined the chat`,
-        senderName: "System",
-      },
-    ],
+    messages: initMessages,
   });
 
   try {
