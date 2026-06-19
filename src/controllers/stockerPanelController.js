@@ -1,5 +1,6 @@
 const Stocker = require("../models/Stocker");
 const StockRequest = require("../models/StockRequest");
+const StockerPayout = require("../models/StockerPayout");
 const Product = require("../models/Product");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
@@ -19,6 +20,9 @@ exports.getProfile = catchAsync(async (req, res) => {
         totalRevenue: stocker.totalRevenue,
         totalCommission: stocker.totalCommission,
         status: stocker.status,
+        cryptoAddress: stocker.cryptoAddress,
+        cryptoNetwork: stocker.cryptoNetwork,
+        lastPayoutAt: stocker.lastPayoutAt,
       },
     },
   });
@@ -30,7 +34,7 @@ exports.getProducts = catchAsync(async (req, res) => {
   if (game) filter.game = game;
 
   const products = await Product.find(filter)
-    .select("name slug game category price imageUrl images gradient stock outOfStock featured")
+    .select("name slug game category price imageUrl images gradient stock onHand outOfStock featured")
     .populate("category", "name slug")
     .sort({ game: 1, name: 1 });
 
@@ -53,7 +57,10 @@ exports.getProducts = catchAsync(async (req, res) => {
     const obj = p.toObject();
     const pendingClaims = pendingByName[p.name.toLowerCase()] || 0;
     obj.pendingClaims = pendingClaims;
-    obj.onHand = Math.max(0, p.stock < 0 ? 0 : p.stock) + pendingClaims;
+
+    const physicalStock = p.onHand !== undefined && p.onHand >= 0 ? p.onHand : (p.stock >= 0 ? p.stock : -1);
+    obj.onHand = physicalStock;
+    obj.availableForSale = physicalStock < 0 ? -1 : Math.max(0, physicalStock - pendingClaims);
     return obj;
   });
 
@@ -151,6 +158,7 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
             productName: item.productName,
             imageUrl: item.imageUrl,
             game: item.game || r.game,
+            salePrice: item.salePrice || 0,
           };
         }
       }
@@ -190,6 +198,96 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
   }
 
   res.json({ success: true, data: { deliveries, total: deliveries.length } });
+});
+
+exports.getMyPayouts = catchAsync(async (req, res) => {
+  const stocker = req.stocker;
+
+  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
+  const stockedProductNames = new Set();
+  const stockedProductMap = {};
+  for (const r of stockedRequests) {
+    for (const item of r.items || []) {
+      const nameLower = item.productName?.toLowerCase();
+      if (nameLower) {
+        stockedProductNames.add(nameLower);
+        if (!stockedProductMap[nameLower]) {
+          stockedProductMap[nameLower] = {
+            productName: item.productName,
+            salePrice: item.salePrice || 0,
+          };
+        }
+      }
+    }
+  }
+
+  let unpaidDeliveries = [];
+  let unpaidAmount = 0;
+
+  if (stockedProductNames.size > 0) {
+    const ClaimSession = require("../models/ClaimSession");
+    const since = stocker.lastPayoutAt || stocker.createdAt;
+    const deliveredSessions = await ClaimSession.find({
+      status: { $in: ["claimed", "ended"] },
+      resolvedAt: { $gt: since },
+    })
+      .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef roomId")
+      .sort({ resolvedAt: -1 })
+      .lean();
+
+    for (const session of deliveredSessions) {
+      let sessionItems = [...(session.items || [])];
+      if (session.itemName && sessionItems.length === 0) {
+        sessionItems = [{ name: session.itemName, quantity: 1 }];
+      }
+      const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
+      if (matchedItems.length > 0) {
+        let sessionRevenue = 0;
+        const itemsWithPrice = matchedItems.map(item => {
+          const key = item.name?.toLowerCase();
+          const salePrice = stockedProductMap[key]?.salePrice || 0;
+          const qty = item.quantity || 1;
+          sessionRevenue += salePrice * qty;
+          return { ...item, salePrice };
+        });
+        const sessionCommission = sessionRevenue * (stocker.commissionRate / 100);
+        unpaidAmount += sessionCommission;
+        unpaidDeliveries.push({
+          roomId: session.roomId,
+          robloxUsername: session.robloxUsername,
+          game: session.game,
+          orderRef: session.orderRef,
+          agentName: session.assignedAgent?.name || "Unknown",
+          deliveredAt: session.resolvedAt,
+          items: itemsWithPrice,
+          revenue: sessionRevenue,
+          commission: sessionCommission,
+        });
+      }
+    }
+  }
+
+  const payouts = await StockerPayout.find({ stocker: stocker._id }).sort({ createdAt: -1 });
+  const totalPaid = payouts.reduce((sum, p) => sum + p.amount, 0);
+
+  res.json({
+    success: true,
+    data: {
+      stocker: {
+        id: stocker._id,
+        name: stocker.name,
+        email: stocker.email,
+        commissionRate: stocker.commissionRate,
+        lastPayoutAt: stocker.lastPayoutAt,
+        cryptoAddress: stocker.cryptoAddress,
+        cryptoNetwork: stocker.cryptoNetwork,
+      },
+      payouts,
+      unpaidAmount,
+      unpaidDeliveries,
+      totalPaid,
+    },
+  });
 });
 
 exports.getMyStats = catchAsync(async (req, res) => {
