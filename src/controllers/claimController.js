@@ -20,15 +20,26 @@ exports.createClaim = catchAsync(async (req, res, next) => {
 
   const emailLower = contactEmail.trim().toLowerCase();
 
-  const existingQuery = {
-    contactEmail: emailLower,
-    status: { $in: ["pending", "active"] },
-  };
+  // First try: exact match by email + orderRef (if provided) + active status
+  let existingSession = null;
   if (orderRef?.trim()) {
-    existingQuery.orderRef = orderRef.trim();
+    existingSession = await ClaimSession.findOne({
+      contactEmail: emailLower,
+      orderRef: orderRef.trim(),
+      status: { $in: ["pending", "active"] },
+    }).sort({ createdAt: -1 });
   }
 
-  const existingSession = await ClaimSession.findOne(existingQuery).sort({ createdAt: -1 });
+  // Fallback: catch double-submits where orderRef differs or is missing on one call
+  // (e.g. page submits before product info loads, then again after)
+  if (!existingSession) {
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+    existingSession = await ClaimSession.findOne({
+      contactEmail: emailLower,
+      status: { $in: ["pending", "active"] },
+      createdAt: { $gte: twoMinAgo },
+    }).sort({ createdAt: -1 });
+  }
   if (existingSession) {
     logger.info(`Returning existing claim session ${existingSession.roomId} for ${robloxUsername} (status: ${existingSession.status})`);
     return res.status(200).json({
@@ -247,7 +258,7 @@ exports.getFullSession = catchAsync(async (req, res, next) => {
 
 exports.updateStatus = catchAsync(async (req, res, next) => {
   const { status, agentName } = req.body;
-  const allowed = ["active", "claimed", "ended"];
+  const allowed = ["active", "claimed", "ended", "closed"];
   if (!allowed.includes(status)) return next(new AppError(`Status must be one of: ${allowed.join(", ")}`, 400));
 
   const session = await ClaimSession.findOne({ roomId: req.params.roomId });
@@ -325,7 +336,7 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
     ];
   }
 
-  const [pending, mine, completed] = await Promise.all([
+  const [pending, mine, completed, closed] = await Promise.all([
     ClaimSession.find(pendingFilter)
       .sort({ createdAt: 1 })
       .limit(50)
@@ -344,6 +355,13 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
       .sort({ resolvedAt: -1 })
       .limit(30)
       .select("-messages -__v"),
+    ClaimSession.find({
+      status: "closed",
+      "assignedAgent.userId": agentId,
+    })
+      .sort({ closedAt: -1 })
+      .limit(30)
+      .select("-messages -__v"),
   ]);
 
   res.json({
@@ -352,6 +370,7 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
       pending:   pending.map(sanitizeSession),
       mine:      mine.map(sanitizeSession),
       completed: completed.map(sanitizeSession),
+      closed:    closed.map(sanitizeSession),
     },
   });
 });
