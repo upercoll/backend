@@ -46,22 +46,33 @@ exports.createClaim = catchAsync(async (req, res, next) => {
 
   const Game = require("../models/Game");
   let claimTimeMsg = null;
+  let nextSlotAt = null;
   if (game?.trim()) {
     try {
       const gameDoc = await Game.findOne({ slug: game.trim().toLowerCase() }).select("name claimTime claimSchedule");
       if (gameDoc) {
-        let effectiveMins = gameDoc.claimTime || 0;
+        const gmt3 = new Date(Date.now() + 3 * 60 * 60 * 1000);
+        const hhmm = `${String(gmt3.getUTCHours()).padStart(2, "0")}:${String(gmt3.getUTCMinutes()).padStart(2, "0")}`;
+        let inActiveSlot = false;
         if (gameDoc.claimSchedule?.length) {
-          const now = new Date();
-          const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
           const slot = gameDoc.claimSchedule.find(s => {
             if (!s.from || !s.to || !s.minutes) return false;
             return s.from <= s.to ? (hhmm >= s.from && hhmm <= s.to) : (hhmm >= s.from || hhmm <= s.to);
           });
-          if (slot) effectiveMins = slot.minutes;
+          if (slot) inActiveSlot = true;
+          if (!inActiveSlot) {
+            const future = gameDoc.claimSchedule
+              .filter(s => s.from && s.from > hhmm)
+              .sort((a, b) => a.from.localeCompare(b.from))[0];
+            if (future) nextSlotAt = future.from;
+          }
+        } else if ((gameDoc.claimTime || 0) > 0) {
+          inActiveSlot = true;
         }
-        if (effectiveMins > 0) {
-          claimTimeMsg = `\u23F1 Claim time for ${gameDoc.name}: up to ${effectiveMins} minute${effectiveMins !== 1 ? "s" : ""}. An agent will join you shortly!`;
+        if (!inActiveSlot && ((gameDoc.claimSchedule?.length || 0) > 0 || (gameDoc.claimTime || 0) > 0)) {
+          claimTimeMsg = nextSlotAt
+            ? `\u23F1 Claim time for ${gameDoc.name} is currently closed. Next available: ${nextSlotAt} (GMT+3).`
+            : `\u23F1 Claim time for ${gameDoc.name} is currently unavailable. Our team will respond when available.`;
         }
       }
     } catch {}
@@ -111,6 +122,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
       roomId: session.roomId,
       status: session.status,
       messages: session.messages,
+      nextSlotAt,
     },
   });
 });
