@@ -384,6 +384,52 @@ function initSocket(server) {
       }
     });
 
+    socket.on("claim:close", async ({ roomId }) => {
+      if (!roomId) return;
+      try {
+        const session = await ClaimSession.findOne({ roomId });
+        if (!session) return;
+
+        const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+        if (!agentId) {
+          socket.emit("claim:error", { message: "Not authenticated" });
+          return;
+        }
+        if (String(session.assignedAgent?.userId) !== String(agentId)) {
+          socket.emit("claim:error", { message: "You can only close chats you handled" });
+          return;
+        }
+        if (!["claimed", "ended"].includes(session.status)) {
+          socket.emit("claim:error", { message: "Can only close completed or ended chats" });
+          return;
+        }
+
+        const agentName = socket.agentName || socket.user?.name || "Agent";
+        session.status = "closed";
+        session.closedAt = new Date();
+        session.closedBy = agentName;
+        session.messages.push({
+          sender: "system",
+          text: "This chat has been closed by the agent.",
+          senderName: "System",
+          timestamp: new Date(),
+        });
+        await session.save();
+
+        io.to(`claim:${roomId}`).emit("claim:closed", {
+          message: "This chat has been closed.",
+        });
+        io.to("admin-room").emit("admin:claim_status_changed", { roomId, status: "closed" });
+        io.to("agent-queue-room").emit("queue:claim_closed", {
+          roomId,
+          agentId,
+          agentName,
+        });
+      } catch (err) {
+        logger.error("claim:close error:", err);
+      }
+    });
+
     socket.on("claim:mark_claimed", async ({ roomId }) => {
       if (!roomId) return;
       try {
