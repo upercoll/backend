@@ -21,12 +21,47 @@ exports.createClaim = catchAsync(async (req, res, next) => {
 
   const emailLower = contactEmail.trim().toLowerCase();
 
+  // Resolve item names up front: prefer what the frontend sent, then fall back to the
+  // customer's most recent paid Order in the database (covers the case where the
+  // customer is on a different device and has no localStorage, AND covers backfilling
+  // an existing/duplicate session below that was created before item info was ready).
+  let resolvedItems = Array.isArray(items) ? items : [];
+  let resolvedItemName = (() => {
+    if (itemName?.trim() && !isGenericName(itemName)) return itemName.trim();
+    const real = resolvedItems.find(i => i?.name?.trim() && !isGenericName(i.name));
+    return real?.name?.trim() || null;
+  })();
+  let resolvedOrderRef = orderRef?.trim() || null;
+
+  if (!resolvedItemName || resolvedItems.length === 0) {
+    try {
+      const orderQuery = { "customer.email": emailLower, "payment.status": "succeeded" };
+      if (resolvedOrderRef) orderQuery.orderNumber = resolvedOrderRef;
+      const order = await Order.findOne(orderQuery)
+        .sort({ createdAt: -1 })
+        .select("items orderNumber")
+        .lean();
+      if (order?.items?.length) {
+        const dbItems = order.items
+          .map(i => ({ name: i.productSnapshot?.name || "", quantity: i.quantity || 1 }))
+          .filter(i => i.name && !isGenericName(i.name));
+        if (dbItems.length) {
+          if (resolvedItems.length === 0) resolvedItems = dbItems;
+          if (!resolvedItemName) resolvedItemName = dbItems[0].name;
+          if (!resolvedOrderRef && order.orderNumber) resolvedOrderRef = order.orderNumber;
+        }
+      }
+    } catch (e) {
+      logger.warn(`Order lookup failed for ${emailLower}: ${e.message}`);
+    }
+  }
+
   // First try: exact match by email + orderRef (if provided) + active status
   let existingSession = null;
-  if (orderRef?.trim()) {
+  if (resolvedOrderRef) {
     existingSession = await ClaimSession.findOne({
       contactEmail: emailLower,
-      orderRef: orderRef.trim(),
+      orderRef: resolvedOrderRef,
       status: { $in: ["pending", "active"] },
     }).sort({ createdAt: -1 });
   }
@@ -41,7 +76,35 @@ exports.createClaim = catchAsync(async (req, res, next) => {
       createdAt: { $gte: twoMinAgo },
     }).sort({ createdAt: -1 });
   }
+
   if (existingSession) {
+    // Backfill item/order/game info onto the existing session if it's missing it and
+    // this request resolved real data — covers the case where an earlier attempt
+    // created the session as a generic/itemless claim (e.g. before checkout finished
+    // confirming, or before the widget had refreshed its local order data) and this
+    // later attempt has the real info available.
+    let changed = false;
+    if ((!existingSession.items || existingSession.items.length === 0) && resolvedItems.length > 0) {
+      existingSession.items = resolvedItems;
+      changed = true;
+    }
+    if (isGenericName(existingSession.itemName) && resolvedItemName) {
+      existingSession.itemName = resolvedItemName;
+      changed = true;
+    }
+    if (!existingSession.orderRef && resolvedOrderRef) {
+      existingSession.orderRef = resolvedOrderRef;
+      changed = true;
+    }
+    if (!existingSession.game && game?.trim()) {
+      existingSession.game = game.trim();
+      changed = true;
+    }
+    if (changed) {
+      await existingSession.save();
+      logger.info(`Backfilled item/order info on existing claim session ${existingSession.roomId}`);
+    }
+
     logger.info(`Returning existing claim session ${existingSession.roomId} for ${robloxUsername} (status: ${existingSession.status})`);
     return res.status(200).json({
       success: true,
@@ -90,41 +153,6 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     } catch {}
   }
 
-  // Resolve item names: prefer what the frontend sent, then fall back to the
-  // customer's most recent paid Order in the database (covers the case where
-  // the customer is on a different device and has no localStorage).
-  let resolvedItems = Array.isArray(items) ? items : [];
-  let resolvedItemName = (() => {
-    if (itemName?.trim() && !isGenericName(itemName)) return itemName.trim();
-    const real = resolvedItems.find(i => i?.name?.trim() && !isGenericName(i.name));
-    return real?.name?.trim() || null;
-  })();
-
-  if (!resolvedItemName || resolvedItems.length === 0) {
-    try {
-      const orderQuery = { "customer.email": emailLower, "payment.status": "succeeded" };
-      if (orderRef?.trim()) orderQuery.orderNumber = orderRef.trim();
-      const order = await Order.findOne(orderQuery)
-        .sort({ createdAt: -1 })
-        .select("items orderNumber")
-        .lean();
-      if (order?.items?.length) {
-        const dbItems = order.items
-          .map(i => ({ name: i.productSnapshot?.name || "", quantity: i.quantity || 1 }))
-          .filter(i => i.name && !isGenericName(i.name));
-        if (dbItems.length) {
-          if (resolvedItems.length === 0) resolvedItems = dbItems;
-          if (!resolvedItemName) resolvedItemName = dbItems[0].name;
-          if (!orderRef?.trim() && order.orderNumber) {
-            req.body.orderRef = order.orderNumber;
-          }
-        }
-      }
-    } catch (e) {
-      logger.warn(`Order lookup failed for ${emailLower}: ${e.message}`);
-    }
-  }
-
   const initMessages = [
     { sender: "system", text: `${robloxUsername.trim()} has joined the chat`, senderName: "System" },
   ];
@@ -136,7 +164,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     roomId,
     robloxUsername: robloxUsername.trim(),
     contactEmail: emailLower,
-    orderRef: req.body.orderRef?.trim() || orderRef?.trim() || null,
+    orderRef: resolvedOrderRef,
     game: game?.trim() || null,
     itemName: resolvedItemName,
     items: resolvedItems,
@@ -157,7 +185,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     });
   } catch {}
 
-  logger.info(`New claim session: ${roomId} for ${robloxUsername} — item: ${itemName || "general"}`);
+  logger.info(`New claim session: ${roomId} for ${robloxUsername} — item: ${resolvedItemName || "general"}`);
 
   res.status(201).json({
     success: true,
