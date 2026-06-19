@@ -41,5 +41,6 @@ router.get("/requests", stockerPanelCtrl.getMyRequests);
 router.post("/requests", stockerPanelCtrl.submitRequest);
 router.get("/stats", stockerPanelCtrl.getMyStats);
 router.get("/sold-deliveries", stockerPanelCtrl.getSoldDeliveries);
+router.get("/payouts", stockerPanelCtrl.getMyPayouts);
 
 module.exports = router;
