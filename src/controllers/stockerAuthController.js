@@ -4,7 +4,7 @@ const AdminProfile = require("../models/AdminProfile");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { signPanelToken } = require("../middleware/panelAuth");
-const { sendVerificationCodeEmail } = require("../config/email");
+const { sendVerificationEmail } = require("../config/email");
 
 function generateCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -91,7 +91,7 @@ exports.sendVerificationCode = catchAsync(async (req, res, next) => {
   await stocker.save();
 
   try {
-    await sendVerificationCodeEmail({ to: stocker.email, code });
+    await sendVerificationEmail({ to: stocker.email, code });
   } catch (err) {
     console.error("Failed to send verification email:", err.message);
   }
