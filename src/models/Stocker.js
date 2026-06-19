@@ -18,6 +18,9 @@ const stockerSchema = new mongoose.Schema(
     totalStocked: { type: Number, default: 0 },
     totalRevenue: { type: Number, default: 0 },
     totalCommission: { type: Number, default: 0 },
+    lastPayoutAt: { type: Date },
+    cryptoAddress: { type: String, trim: true, default: "" },
+    cryptoNetwork: { type: String, trim: true, default: "" },
   },
   { timestamps: true }
 );
