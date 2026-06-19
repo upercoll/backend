@@ -1,5 +1,6 @@
 const Stocker = require("../models/Stocker");
 const StockRequest = require("../models/StockRequest");
+const StockerPayout = require("../models/StockerPayout");
 const Product = require("../models/Product");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
@@ -82,11 +83,13 @@ exports.updateStocker = catchAsync(async (req, res, next) => {
   const stocker = await Stocker.findById(req.params.id);
   if (!stocker) return next(new AppError("Stocker not found", 404));
 
-  const { name, status, commissionRate, games } = req.body;
+  const { name, status, commissionRate, games, cryptoAddress, cryptoNetwork } = req.body;
   if (name !== undefined) stocker.name = name;
   if (status) stocker.status = status;
   if (commissionRate !== undefined) stocker.commissionRate = commissionRate;
   if (games) stocker.games = games;
+  if (cryptoAddress !== undefined) stocker.cryptoAddress = cryptoAddress;
+  if (cryptoNetwork !== undefined) stocker.cryptoNetwork = cryptoNetwork;
 
   await stocker.save();
   res.json({ success: true, data: { stocker } });
@@ -147,7 +150,7 @@ exports.markStocked = catchAsync(async (req, res, next) => {
   for (const item of request.items) {
     if (item.product) {
       await Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: item.quantity },
+        $inc: { stock: item.quantity, onHand: item.quantity },
         outOfStock: false,
       });
     }
@@ -299,4 +302,127 @@ exports.getStockerStats = catchAsync(async (req, res) => {
   );
 
   res.json({ success: true, data: { stats } });
+});
+
+async function computeUnpaidDeliveries(stocker) {
+  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
+
+  const stockedProductNames = new Set();
+  const stockedProductMap = {};
+  for (const r of stockedRequests) {
+    for (const item of r.items || []) {
+      const nameLower = item.productName?.toLowerCase();
+      if (nameLower) {
+        stockedProductNames.add(nameLower);
+        if (!stockedProductMap[nameLower]) {
+          stockedProductMap[nameLower] = {
+            productName: item.productName,
+            salePrice: item.salePrice || 0,
+          };
+        }
+      }
+    }
+  }
+
+  if (stockedProductNames.size === 0) return { deliveries: [], unpaidAmount: 0, deliveryCount: 0 };
+
+  const ClaimSession = require("../models/ClaimSession");
+  const since = stocker.lastPayoutAt || stocker.createdAt;
+  const deliveredSessions = await ClaimSession.find({
+    status: { $in: ["claimed", "ended"] },
+    resolvedAt: { $gt: since },
+  })
+    .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef roomId")
+    .sort({ resolvedAt: -1 })
+    .lean();
+
+  const deliveries = [];
+  let unpaidAmount = 0;
+
+  for (const session of deliveredSessions) {
+    let sessionItems = [...(session.items || [])];
+    if (session.itemName && sessionItems.length === 0) {
+      sessionItems = [{ name: session.itemName, quantity: 1 }];
+    }
+    const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
+    if (matchedItems.length > 0) {
+      let sessionRevenue = 0;
+      const itemsWithPrice = matchedItems.map(item => {
+        const key = item.name?.toLowerCase();
+        const salePrice = stockedProductMap[key]?.salePrice || 0;
+        const qty = item.quantity || 1;
+        sessionRevenue += salePrice * qty;
+        return { ...item, salePrice };
+      });
+      const sessionCommission = sessionRevenue * (stocker.commissionRate / 100);
+      unpaidAmount += sessionCommission;
+      deliveries.push({
+        roomId: session.roomId,
+        robloxUsername: session.robloxUsername,
+        game: session.game,
+        orderRef: session.orderRef,
+        agentName: session.assignedAgent?.name || "Unknown",
+        deliveredAt: session.resolvedAt,
+        items: itemsWithPrice,
+        revenue: sessionRevenue,
+        commission: sessionCommission,
+      });
+    }
+  }
+
+  return { deliveries, unpaidAmount, deliveryCount: deliveries.length };
+}
+
+exports.getStockerPayouts = catchAsync(async (req, res, next) => {
+  const stocker = await Stocker.findById(req.params.id);
+  if (!stocker) return next(new AppError("Stocker not found", 404));
+
+  const [payouts, unpaidData] = await Promise.all([
+    StockerPayout.find({ stocker: stocker._id }).sort({ createdAt: -1 }),
+    computeUnpaidDeliveries(stocker),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      stocker,
+      payouts,
+      unpaidAmount: unpaidData.unpaidAmount,
+      unpaidDeliveries: unpaidData.deliveries,
+      unpaidDeliveryCount: unpaidData.deliveryCount,
+    },
+  });
+});
+
+exports.markStockerPaid = catchAsync(async (req, res, next) => {
+  const stocker = await Stocker.findById(req.params.id);
+  if (!stocker) return next(new AppError("Stocker not found", 404));
+
+  const { notes } = req.body;
+  const unpaidData = await computeUnpaidDeliveries(stocker);
+
+  if (unpaidData.unpaidAmount <= 0) {
+    return next(new AppError("No unpaid amount to mark as paid", 400));
+  }
+
+  const periodStart = stocker.lastPayoutAt || stocker.createdAt;
+  const periodEnd = new Date();
+
+  const payout = await StockerPayout.create({
+    stocker: stocker._id,
+    amount: unpaidData.unpaidAmount,
+    commissionRate: stocker.commissionRate,
+    deliveryCount: unpaidData.deliveryCount,
+    periodStart,
+    periodEnd,
+    notes: notes || "",
+    markedPaidBy: req.panelUser?.email || "Admin",
+    cryptoAddress: stocker.cryptoAddress || "",
+    cryptoNetwork: stocker.cryptoNetwork || "",
+  });
+
+  stocker.lastPayoutAt = periodEnd;
+  await stocker.save();
+
+  res.json({ success: true, data: { payout } });
 });
