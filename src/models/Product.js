@@ -23,6 +23,7 @@ const productSchema = new mongoose.Schema(
     imageUrl: { type: String },
 
     stock: { type: Number, default: -1 },
+    onHand: { type: Number, default: -1 },
     outOfStock: { type: Boolean, default: false },
 
     featured: { type: Boolean, default: false },
