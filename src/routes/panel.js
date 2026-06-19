@@ -154,8 +154,9 @@ router.patch("/stock/requests/:id/approve", requirePermission("manage_stock"), s
 router.patch("/stock/requests/:id/stocked", requirePermission("manage_stock"), stockCtrl.markStocked);
 router.patch("/stock/requests/:id/reject", requirePermission("manage_stock"), stockCtrl.rejectRequest);
 router.get("/stock/stockers", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.listStockers);
-router.get("/stock/stockers/:id", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.getStockerDetail);
 router.post("/stock/stockers/invite", requirePermission("manage_stockers"), stockCtrl.inviteStocker);
+router.get("/stock/stockers/:id/sales", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.getStockerSales);
+router.get("/stock/stockers/:id", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.getStockerDetail);
 router.patch("/stock/stockers/:id", requirePermission("manage_stockers"), stockCtrl.updateStocker);
 router.delete("/stock/stockers/:id", requirePermission("manage_stockers"), stockCtrl.deleteStocker);
 
