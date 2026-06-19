@@ -35,9 +35,12 @@ const claimSessionSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "active", "claimed", "ended"],
+      enum: ["pending", "active", "claimed", "ended", "closed"],
       default: "pending",
     },
+
+    closedAt: { type: Date },
+    closedBy: { type: String },
 
     assignedAgent: {
       userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
