@@ -178,6 +178,89 @@ exports.markStocked = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: { request } });
 });
 
+exports.getStockerSales = catchAsync(async (req, res, next) => {
+  const stocker = await Stocker.findById(req.params.id);
+  if (!stocker) return next(new AppError("Stocker not found", 404));
+
+  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
+
+  const stockedProductNames = new Set();
+  const stockedProductMap = {};
+  for (const req of stockedRequests) {
+    for (const item of req.items || []) {
+      const nameLower = item.productName?.toLowerCase();
+      if (nameLower) {
+        stockedProductNames.add(nameLower);
+        if (!stockedProductMap[nameLower]) {
+          stockedProductMap[nameLower] = {
+            productName: item.productName,
+            imageUrl: item.imageUrl,
+            game: item.game || req.game,
+            salePrice: item.salePrice,
+          };
+        }
+      }
+    }
+  }
+
+  if (stockedProductNames.size === 0) {
+    return res.json({ success: true, data: { stocker: { _id: stocker._id, name: stocker.name, email: stocker.email }, deliveries: [], total: 0, productSummary: [] } });
+  }
+
+  const ClaimSession = require("../models/ClaimSession");
+  const deliveredSessions = await ClaimSession.find({ status: { $in: ["claimed", "ended"] } })
+    .select("robloxUsername contactEmail items itemName assignedAgent resolvedAt game orderRef createdAt roomId")
+    .sort({ resolvedAt: -1 })
+    .lean();
+
+  const deliveries = [];
+  const productSaleMap = {};
+
+  for (const session of deliveredSessions) {
+    let sessionItems = [...(session.items || [])];
+    if (session.itemName && sessionItems.length === 0) {
+      sessionItems = [{ name: session.itemName, quantity: 1 }];
+    }
+
+    const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
+
+    if (matchedItems.length > 0) {
+      deliveries.push({
+        roomId: session.roomId,
+        robloxUsername: session.robloxUsername,
+        contactEmail: session.contactEmail,
+        game: session.game,
+        orderRef: session.orderRef,
+        agentName: session.assignedAgent?.name || "Unknown Agent",
+        deliveredAt: session.resolvedAt || session.createdAt,
+        items: matchedItems.map(item => ({ ...item, ...(stockedProductMap[item.name?.toLowerCase()] || {}) })),
+      });
+
+      for (const item of matchedItems) {
+        const key = item.name?.toLowerCase();
+        if (key) {
+          if (!productSaleMap[key]) {
+            productSaleMap[key] = { ...stockedProductMap[key], totalSold: 0, totalRevenue: 0 };
+          }
+          const qty = item.quantity || 1;
+          productSaleMap[key].totalSold += qty;
+          productSaleMap[key].totalRevenue += qty * (stockedProductMap[key]?.salePrice || 0);
+        }
+      }
+    }
+  }
+
+  res.json({
+    success: true,
+    data: {
+      stocker: { _id: stocker._id, name: stocker.name, email: stocker.email },
+      deliveries,
+      total: deliveries.length,
+      productSummary: Object.values(productSaleMap),
+    },
+  });
+});
+
 exports.rejectRequest = catchAsync(async (req, res, next) => {
   const { adminNotes } = req.body;
   const request = await StockRequest.findById(req.params.id);
