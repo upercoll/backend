@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require("uuid");
 const ClaimSession = require("../models/ClaimSession");
+const Order = require("../models/Order");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const logger = require("../utils/logger");
@@ -89,6 +90,41 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     } catch {}
   }
 
+  // Resolve item names: prefer what the frontend sent, then fall back to the
+  // customer's most recent paid Order in the database (covers the case where
+  // the customer is on a different device and has no localStorage).
+  let resolvedItems = Array.isArray(items) ? items : [];
+  let resolvedItemName = (() => {
+    if (itemName?.trim() && !isGenericName(itemName)) return itemName.trim();
+    const real = resolvedItems.find(i => i?.name?.trim() && !isGenericName(i.name));
+    return real?.name?.trim() || null;
+  })();
+
+  if (!resolvedItemName || resolvedItems.length === 0) {
+    try {
+      const orderQuery = { "customer.email": emailLower, "payment.status": "succeeded" };
+      if (orderRef?.trim()) orderQuery.orderNumber = orderRef.trim();
+      const order = await Order.findOne(orderQuery)
+        .sort({ createdAt: -1 })
+        .select("items orderNumber")
+        .lean();
+      if (order?.items?.length) {
+        const dbItems = order.items
+          .map(i => ({ name: i.productSnapshot?.name || "", quantity: i.quantity || 1 }))
+          .filter(i => i.name && !isGenericName(i.name));
+        if (dbItems.length) {
+          if (resolvedItems.length === 0) resolvedItems = dbItems;
+          if (!resolvedItemName) resolvedItemName = dbItems[0].name;
+          if (!orderRef?.trim() && order.orderNumber) {
+            req.body.orderRef = order.orderNumber;
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`Order lookup failed for ${emailLower}: ${e.message}`);
+    }
+  }
+
   const initMessages = [
     { sender: "system", text: `${robloxUsername.trim()} has joined the chat`, senderName: "System" },
   ];
@@ -99,15 +135,11 @@ exports.createClaim = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.create({
     roomId,
     robloxUsername: robloxUsername.trim(),
-    contactEmail: contactEmail.trim().toLowerCase(),
-    orderRef: orderRef?.trim() || null,
+    contactEmail: emailLower,
+    orderRef: req.body.orderRef?.trim() || orderRef?.trim() || null,
     game: game?.trim() || null,
-    itemName: (itemName?.trim() && itemName.trim().toLowerCase() !== "general claim")
-      ? itemName.trim()
-      : (Array.isArray(items) && items[0]?.name?.trim() && items[0].name.trim().toLowerCase() !== "general claim")
-        ? items[0].name.trim()
-        : null,
-    items: Array.isArray(items) ? items : [],
+    itemName: resolvedItemName,
+    items: resolvedItems,
     messages: initMessages,
   });
 
@@ -310,13 +342,16 @@ exports.getActiveClaims = catchAsync(async (req, res) => {
   res.json({ success: true, data: { sessions } });
 });
 
+const GENERIC_ITEM_NAMES = ["general claim", "claim chat"];
+function isGenericName(name) {
+  return !name || GENERIC_ITEM_NAMES.includes(name.trim().toLowerCase());
+}
+
 function sanitizeSession(s) {
   const obj = s.toObject ? s.toObject() : { ...s };
-  if (obj.itemName && obj.itemName.trim().toLowerCase() === "general claim") obj.itemName = null;
+  if (isGenericName(obj.itemName)) obj.itemName = null;
   if (Array.isArray(obj.items)) {
-    obj.items = obj.items.filter(
-      i => i.name && i.name.trim().toLowerCase() !== "general claim"
-    );
+    obj.items = obj.items.filter(i => i.name && !isGenericName(i.name));
   }
   return obj;
 }
