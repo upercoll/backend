@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const adminProfileSchema = new mongoose.Schema(
   {
     memberId: { type: mongoose.Schema.Types.ObjectId, refPath: "memberType" },
-    memberType: { type: String, enum: ["User", "TeamMember"], required: true },
+    memberType: { type: String, enum: ["User", "TeamMember", "Stocker"], required: true },
     isOwner: { type: Boolean, default: false },
     displayName: { type: String, trim: true, maxlength: 50 },
     username: {
