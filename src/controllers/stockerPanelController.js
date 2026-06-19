@@ -34,7 +34,30 @@ exports.getProducts = catchAsync(async (req, res) => {
     .populate("category", "name slug")
     .sort({ game: 1, name: 1 });
 
-  res.json({ success: true, data: { products } });
+  const ClaimSession = require("../models/ClaimSession");
+  const activeSessions = await ClaimSession.find({ status: { $in: ["pending", "active"] } })
+    .select("items")
+    .lean();
+
+  const pendingByName = {};
+  for (const session of activeSessions) {
+    for (const item of session.items || []) {
+      if (item.name) {
+        const key = item.name.toLowerCase();
+        pendingByName[key] = (pendingByName[key] || 0) + (item.quantity || 1);
+      }
+    }
+  }
+
+  const productsWithOnHand = products.map(p => {
+    const obj = p.toObject();
+    const pendingClaims = pendingByName[p.name.toLowerCase()] || 0;
+    obj.pendingClaims = pendingClaims;
+    obj.onHand = Math.max(0, p.stock < 0 ? 0 : p.stock) + pendingClaims;
+    return obj;
+  });
+
+  res.json({ success: true, data: { products: productsWithOnHand } });
 });
 
 exports.getMyRequests = catchAsync(async (req, res) => {
@@ -109,6 +132,64 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
   } catch (e) {}
 
   res.status(201).json({ success: true, data: { request } });
+});
+
+exports.getSoldDeliveries = catchAsync(async (req, res) => {
+  const stocker = req.stocker;
+
+  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
+
+  const stockedProductNames = new Set();
+  const stockedProductMap = {};
+  for (const r of stockedRequests) {
+    for (const item of r.items || []) {
+      const nameLower = item.productName?.toLowerCase();
+      if (nameLower) {
+        stockedProductNames.add(nameLower);
+        if (!stockedProductMap[nameLower]) {
+          stockedProductMap[nameLower] = {
+            productName: item.productName,
+            imageUrl: item.imageUrl,
+            game: item.game || r.game,
+          };
+        }
+      }
+    }
+  }
+
+  if (stockedProductNames.size === 0) {
+    return res.json({ success: true, data: { deliveries: [], total: 0 } });
+  }
+
+  const ClaimSession = require("../models/ClaimSession");
+  const deliveredSessions = await ClaimSession.find({ status: { $in: ["claimed", "ended"] } })
+    .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef createdAt roomId")
+    .sort({ resolvedAt: -1 })
+    .lean();
+
+  const deliveries = [];
+  for (const session of deliveredSessions) {
+    let sessionItems = [...(session.items || [])];
+    if (session.itemName && sessionItems.length === 0) {
+      sessionItems = [{ name: session.itemName, quantity: 1 }];
+    }
+
+    const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
+
+    if (matchedItems.length > 0) {
+      deliveries.push({
+        roomId: session.roomId,
+        robloxUsername: session.robloxUsername,
+        game: session.game,
+        orderRef: session.orderRef,
+        agentName: session.assignedAgent?.name || "Unknown Agent",
+        deliveredAt: session.resolvedAt || session.createdAt,
+        items: matchedItems.map(item => ({ ...item, ...(stockedProductMap[item.name?.toLowerCase()] || {}) })),
+      });
+    }
+  }
+
+  res.json({ success: true, data: { deliveries, total: deliveries.length } });
 });
 
 exports.getMyStats = catchAsync(async (req, res) => {
