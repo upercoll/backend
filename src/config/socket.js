@@ -399,8 +399,8 @@ function initSocket(server) {
           socket.emit("claim:error", { message: "You can only close chats you handled" });
           return;
         }
-        if (!["claimed", "ended"].includes(session.status)) {
-          socket.emit("claim:error", { message: "Can only close completed or ended chats" });
+        if (!["active", "claimed", "ended"].includes(session.status)) {
+          socket.emit("claim:error", { message: "Can only close active or completed chats" });
           return;
         }
 
