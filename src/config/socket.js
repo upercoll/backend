@@ -5,6 +5,7 @@ const ClaimSession = require("../models/ClaimSession");
 const Order = require("../models/Order");
 const AgentStats = require("../models/AgentStats");
 const AdminProfile = require("../models/AdminProfile");
+const Product = require("../models/Product");
 const { sendAgentReplyNotificationEmail } = require("./email");
 const logger = require("../utils/logger");
 
@@ -478,6 +479,33 @@ function initSocket(server) {
             }
           } catch (orderErr) {
             logger.error("Failed to auto-fulfill order from claim:", orderErr);
+          }
+        }
+
+        // Only decrement stock if this claim was NOT paid through the store.
+        // Paid orders already had stock decremented by paymentController at checkout.
+        if (!session.orderRef) {
+          try {
+            for (const item of session.items || []) {
+              if (!item.name) continue;
+              const qty = item.quantity || 1;
+              let filter = null;
+              if (item.itemId && /^[0-9a-f]{24}$/i.test(item.itemId)) {
+                filter = { _id: item.itemId, stock: { $gt: 0 } };
+              } else {
+                filter = { name: new RegExp(`^${item.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"), active: true, stock: { $gt: 0 } };
+              }
+              const p = await Product.findOneAndUpdate(
+                filter,
+                { $inc: { stock: -qty, salesCount: qty } },
+                { new: true }
+              );
+              if (p && p.stock <= 0) {
+                Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
+              }
+            }
+          } catch (stockErr) {
+            logger.error("Failed to decrement product stock on claim delivery:", stockErr);
           }
         }
 
