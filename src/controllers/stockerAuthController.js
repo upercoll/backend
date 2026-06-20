@@ -167,7 +167,7 @@ exports.verifyAndActivate = catchAsync(async (req, res, next) => {
 });
 
 exports.me = catchAsync(async (req, res, next) => {
-  const stocker = req.panelUser.stocker;
+  const stocker = req.stocker;
   let profile = await AdminProfile.findOne({ memberId: stocker._id, memberType: "Stocker" });
   if (!profile) {
     profile = await AdminProfile.create({
