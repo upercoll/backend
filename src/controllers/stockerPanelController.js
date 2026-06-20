@@ -98,7 +98,12 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
       return next(new AppError(`Product not found: ${item.productId}`, 404));
     }
 
-    const itemTotal = product.price * item.quantity;
+    const storePrice = product.price;
+    const customPrice = item.customPrice != null && item.customPrice > 0
+      ? parseFloat(item.customPrice)
+      : null;
+    const effectivePrice = customPrice !== null ? customPrice : storePrice;
+    const itemTotal = effectivePrice * item.quantity;
     totalSaleValue += itemTotal;
 
     enrichedItems.push({
@@ -109,7 +114,9 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
       imageUrl: product.imageUrl || (product.images && product.images[0]) || "",
       gradient: product.gradient,
       quantity: item.quantity,
-      salePrice: product.price,
+      storePrice,
+      customPrice: customPrice !== null ? customPrice : undefined,
+      salePrice: effectivePrice,
       totalSaleValue: itemTotal,
     });
   }
