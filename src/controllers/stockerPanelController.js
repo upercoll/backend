@@ -155,6 +155,8 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
 
   const stockedProductNames = new Set();
   const stockedProductMap = {};
+  const stockedQuantityMap = {};
+
   for (const r of stockedRequests) {
     for (const item of r.items || []) {
       const nameLower = item.productName?.toLowerCase();
@@ -168,6 +170,7 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
             salePrice: item.salePrice || 0,
           };
         }
+        stockedQuantityMap[nameLower] = (stockedQuantityMap[nameLower] || 0) + (item.quantity || 1);
       }
     }
   }
@@ -179,19 +182,30 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
   const ClaimSession = require("../models/ClaimSession");
   const deliveredSessions = await ClaimSession.find({ status: { $in: ["claimed", "ended"] } })
     .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef createdAt roomId")
-    .sort({ resolvedAt: -1 })
+    .sort({ resolvedAt: 1 })
     .lean();
 
+  const remainingQty = { ...stockedQuantityMap };
   const deliveries = [];
+
   for (const session of deliveredSessions) {
     let sessionItems = [...(session.items || [])];
     if (session.itemName && sessionItems.length === 0) {
       sessionItems = [{ name: session.itemName, quantity: 1 }];
     }
 
-    const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
+    const creditedItems = [];
+    for (const item of sessionItems) {
+      const key = item.name?.toLowerCase();
+      if (!key || !stockedProductNames.has(key)) continue;
+      const remaining = remainingQty[key] || 0;
+      if (remaining <= 0) continue;
+      const creditQty = Math.min(item.quantity || 1, remaining);
+      remainingQty[key] -= creditQty;
+      creditedItems.push({ ...item, quantity: creditQty, ...(stockedProductMap[key] || {}) });
+    }
 
-    if (matchedItems.length > 0) {
+    if (creditedItems.length > 0) {
       deliveries.push({
         roomId: session.roomId,
         robloxUsername: session.robloxUsername,
@@ -199,10 +213,12 @@ exports.getSoldDeliveries = catchAsync(async (req, res) => {
         orderRef: session.orderRef,
         agentName: session.assignedAgent?.name || "Unknown Agent",
         deliveredAt: session.resolvedAt || session.createdAt,
-        items: matchedItems.map(item => ({ ...item, ...(stockedProductMap[item.name?.toLowerCase()] || {}) })),
+        items: creditedItems,
       });
     }
   }
+
+  deliveries.sort((a, b) => new Date(b.deliveredAt) - new Date(a.deliveredAt));
 
   res.json({ success: true, data: { deliveries, total: deliveries.length } });
 });
@@ -213,6 +229,8 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
   const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
   const stockedProductNames = new Set();
   const stockedProductMap = {};
+  const stockedQuantityMap = {};
+
   for (const r of stockedRequests) {
     for (const item of r.items || []) {
       const nameLower = item.productName?.toLowerCase();
@@ -224,6 +242,7 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
             salePrice: item.salePrice || 0,
           };
         }
+        stockedQuantityMap[nameLower] = (stockedQuantityMap[nameLower] || 0) + (item.quantity || 1);
       }
     }
   }
@@ -239,24 +258,33 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
       resolvedAt: { $gt: since },
     })
       .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef roomId")
-      .sort({ resolvedAt: -1 })
+      .sort({ resolvedAt: 1 })
       .lean();
+
+    const remainingQty = { ...stockedQuantityMap };
 
     for (const session of deliveredSessions) {
       let sessionItems = [...(session.items || [])];
       if (session.itemName && sessionItems.length === 0) {
         sessionItems = [{ name: session.itemName, quantity: 1 }];
       }
-      const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
-      if (matchedItems.length > 0) {
-        let sessionRevenue = 0;
-        const itemsWithPrice = matchedItems.map(item => {
-          const key = item.name?.toLowerCase();
-          const salePrice = stockedProductMap[key]?.salePrice || 0;
-          const qty = item.quantity || 1;
-          sessionRevenue += salePrice * qty;
-          return { ...item, salePrice };
-        });
+
+      const creditedItems = [];
+      let sessionRevenue = 0;
+
+      for (const item of sessionItems) {
+        const key = item.name?.toLowerCase();
+        if (!key || !stockedProductNames.has(key)) continue;
+        const remaining = remainingQty[key] || 0;
+        if (remaining <= 0) continue;
+        const creditQty = Math.min(item.quantity || 1, remaining);
+        remainingQty[key] -= creditQty;
+        const salePrice = stockedProductMap[key]?.salePrice || 0;
+        sessionRevenue += salePrice * creditQty;
+        creditedItems.push({ ...item, quantity: creditQty, salePrice });
+      }
+
+      if (creditedItems.length > 0) {
         const sessionCommission = sessionRevenue * (stocker.commissionRate / 100);
         unpaidAmount += sessionCommission;
         unpaidDeliveries.push({
@@ -266,12 +294,14 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
           orderRef: session.orderRef,
           agentName: session.assignedAgent?.name || "Unknown",
           deliveredAt: session.resolvedAt,
-          items: itemsWithPrice,
+          items: creditedItems,
           revenue: sessionRevenue,
           commission: sessionCommission,
         });
       }
     }
+
+    unpaidDeliveries.sort((a, b) => new Date(b.deliveredAt) - new Date(a.deliveredAt));
   }
 
   const payouts = await StockerPayout.find({ stocker: stocker._id }).sort({ createdAt: -1 });
