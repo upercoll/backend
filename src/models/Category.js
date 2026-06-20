@@ -12,7 +12,7 @@ const subcategorySchema = new mongoose.Schema({
 const categorySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    slug: { type: String, required: true, unique: true, trim: true, lowercase: true },
+    slug: { type: String, required: true, trim: true, lowercase: true },
     description: { type: String, trim: true },
     game: {
       type: String,
@@ -33,6 +33,6 @@ const categorySchema = new mongoose.Schema(
 );
 
 categorySchema.index({ game: 1 });
-categorySchema.index({ slug: 1 });
+categorySchema.index({ slug: 1, game: 1 }, { unique: true });
 
 module.exports = mongoose.model("Category", categorySchema);
