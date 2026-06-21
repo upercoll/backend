@@ -67,14 +67,45 @@ exports.createClaim = catchAsync(async (req, res, next) => {
   }
 
   // Fallback: catch double-submits where orderRef differs or is missing on one call
-  // (e.g. page submits before product info loads, then again after)
+  // (e.g. page submits before product info loads, then again after).
+  // Only applies when BOTH sides have no orderRef, or they share the same one —
+  // a request carrying a different orderRef is a new purchase and must get a fresh session.
   if (!existingSession) {
     const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
-    existingSession = await ClaimSession.findOne({
+    const recentActive = await ClaimSession.findOne({
       contactEmail: emailLower,
       status: { $in: ["pending", "active"] },
       createdAt: { $gte: twoMinAgo },
     }).sort({ createdAt: -1 });
+
+    if (recentActive) {
+      const sameOrder =
+        !resolvedOrderRef ||
+        !recentActive.orderRef ||
+        recentActive.orderRef === resolvedOrderRef;
+      if (sameOrder) existingSession = recentActive;
+    }
+  }
+
+  // Also return recently closed/ended/claimed sessions so the customer
+  // cannot immediately re-create a new session after an agent closes theirs.
+  // Only blocks re-creation when the order ref matches (or neither side has one) —
+  // a new purchase with a different orderRef must be allowed through as a fresh claim.
+  if (!existingSession) {
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const recentClosed = await ClaimSession.findOne({
+      contactEmail: emailLower,
+      status: { $in: ["closed", "ended", "claimed"] },
+      updatedAt: { $gte: thirtyMinAgo },
+    }).sort({ updatedAt: -1 });
+
+    if (recentClosed) {
+      const sameOrder =
+        !resolvedOrderRef ||
+        !recentClosed.orderRef ||
+        recentClosed.orderRef === resolvedOrderRef;
+      if (sameOrder) existingSession = recentClosed;
+    }
   }
 
   if (existingSession) {
@@ -139,7 +170,15 @@ exports.createClaim = catchAsync(async (req, res, next) => {
             const future = gameDoc.claimSchedule
               .filter(s => s.from && s.from > hhmm)
               .sort((a, b) => a.from.localeCompare(b.from))[0];
-            if (future) nextSlotAt = future.from;
+            if (future) {
+              nextSlotAt = future.from;
+            } else {
+              // No future slot today — wrap to earliest slot (next day, same schedule)
+              const earliest = gameDoc.claimSchedule
+                .filter(s => s.from)
+                .sort((a, b) => a.from.localeCompare(b.from))[0];
+              if (earliest) nextSlotAt = earliest.from;
+            }
           }
         } else if ((gameDoc.claimTime || 0) > 0) {
           inActiveSlot = true;
