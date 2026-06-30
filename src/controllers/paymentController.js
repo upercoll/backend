@@ -30,6 +30,11 @@ async function resolveCartItems(cartItems) {
     if (product.outOfStock) throw new AppError(`"${product.name}" is out of stock`, 400);
 
     const qty = Math.max(1, parseInt(cartItem.quantity) || 1);
+
+    if (product.stock !== -1 && qty > product.stock) {
+      if (product.stock <= 0) throw new AppError(`"${product.name}" is out of stock`, 400);
+      throw new AppError(`Only ${product.stock} unit(s) of "${product.name}" available`, 400);
+    }
     const unitPrice = product.price;
     const lineTotal = unitPrice * qty;
     subtotal += lineTotal;
@@ -236,8 +241,9 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
 
     order.items.forEach(({ product, quantity }) => {
       Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
+      // Only decrement finite stock (stock !== -1) and only if enough remains (atomic guard)
       Product.findOneAndUpdate(
-        { _id: product, stock: { $gt: 0 } },
+        { _id: product, stock: { $gte: quantity } },
         { $inc: { stock: -quantity } },
         { new: true }
       ).then(p => {
@@ -339,8 +345,9 @@ exports.webhook = catchAsync(async (req, res, next) => {
         await order.save();
         order.items.forEach(({ product, quantity }) => {
           Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
+          // Only decrement finite stock (stock !== -1) and only if enough remains (atomic guard)
           Product.findOneAndUpdate(
-            { _id: product, stock: { $gt: 0 } },
+            { _id: product, stock: { $gte: quantity } },
             { $inc: { stock: -quantity } },
             { new: true }
           ).then(p => {
