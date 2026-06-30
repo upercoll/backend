@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const ctrl = require("../controllers/collaboratorController");
+const socialCtrl = require("../controllers/socialController");
 const { panelAuth, ownerOnly } = require("../middleware/panelAuth");
 const jwt = require("jsonwebtoken");
 const AppError = require("../utils/AppError");
@@ -25,6 +26,14 @@ router.post("/invite/:token/verify", ctrl.verifyAndActivate);
 router.post("/login", ctrl.collabLogin);
 
 router.get("/me", collabAuth, ctrl.collabMe);
+
+// ── Creator social endpoints (collabAuth) ──────────────────────────────────
+router.get("/social/my",          collabAuth, socialCtrl.creatorGetMy);
+router.get("/social/stats",       collabAuth, socialCtrl.creatorGetStats);
+router.get("/social/payouts",     collabAuth, socialCtrl.creatorGetPayouts);
+router.post("/social/preview",    collabAuth, socialCtrl.creatorPreview);
+router.post("/social/submit",     collabAuth, socialCtrl.creatorSubmit);
+router.post("/social/:id/accept", collabAuth, socialCtrl.creatorAccept);
 
 router.use(panelAuth);
 router.use(ownerOnly);
