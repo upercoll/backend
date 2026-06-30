@@ -143,6 +143,14 @@ router.get("/customers/:id", ownerOnly, customerAdminCtrl.getCustomer);
 router.patch("/customers/:id", ownerOnly, customerAdminCtrl.updateCustomer);
 router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 
+const socialCtrl = require("../controllers/socialController");
+router.get("/socials",                                  requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminList);
+router.get("/socials/creators",                         requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminListCreators);
+router.post("/socials/creators/:collabId/mark-paid",    requirePermission("manage_socials"),                  socialCtrl.adminMarkPaid);
+router.get("/socials/creators/:collabId",               requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetCreator);
+router.patch("/socials/:id/rate",                       requirePermission("manage_socials"),                  socialCtrl.adminSetRate);
+router.get("/socials/:id",                              requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetOne);
+
 const claimCtrl = require("../controllers/claimController");
 router.get("/claims/queue", requirePermission("claim_agent"), claimCtrl.getAgentQueue);
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
