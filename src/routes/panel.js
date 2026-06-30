@@ -78,7 +78,7 @@ router.post("/games", requirePermission(["create_games", "manage_games"]), uploa
 router.patch("/games/:slug", requirePermission(["edit_games", "manage_games"]), upload.fields([{ name: "image", maxCount: 1 }, { name: "banner", maxCount: 1 }]), gamesCtrl.updateGame);
 router.delete("/games/:slug", requirePermission(["delete_games", "manage_games"]), gamesCtrl.deleteGame);
 
-router.get("/categories", requirePermission("manage_categories"), categoryCtrl.getAll);
+router.get("/categories", requirePermission(["manage_categories", "manage_products", "view_products", "edit_products", "create_products"]), categoryCtrl.getAll);
 router.get("/categories/game/:game", categoryCtrl.getByGame);
 router.post("/categories", requirePermission("manage_categories"), categoryCtrl.create);
 router.patch("/categories/:id", requirePermission("manage_categories"), categoryCtrl.update);
@@ -91,6 +91,7 @@ router.post("/products/bulk", requirePermission(["create_products", "manage_prod
 router.get("/products/:id", requirePermission(["view_products", "manage_products"]), productCtrl.getOne);
 router.post("/products", requirePermission(["create_products", "manage_products"]), upload.array("images", 10), productCtrl.create);
 router.patch("/products/:id/toggle-active", requirePermission(["edit_products", "manage_products"]), productCtrl.toggleActive);
+router.patch("/products/:id/stock-fields", requirePermission(["edit_products", "manage_products", "manage_stock"]), productCtrl.updateStockFields);
 router.patch("/products/:id", requirePermission(["edit_products", "manage_products"]), upload.array("images", 10), productCtrl.update);
 router.delete("/products/:id", requirePermission(["delete_products", "manage_products"]), productCtrl.delete);
 
