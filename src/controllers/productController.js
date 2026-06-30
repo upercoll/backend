@@ -155,6 +155,20 @@ exports.adminGetAll = catchAsync(async (req, res) => {
   res.json({ success: true, total, count: products.length, data: products });
 });
 
+exports.updateStockFields = catchAsync(async (req, res, next) => {
+  const allowed = ["stock", "onHand", "outOfStock"];
+  const update = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) update[key] = req.body[key];
+  }
+  if (Object.keys(update).length === 0) {
+    return next(new AppError("No valid fields to update", 400));
+  }
+  const product = await Product.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+  if (!product) return next(new AppError("Product not found", 404));
+  res.json({ success: true, data: product });
+});
+
 exports.toggleActive = catchAsync(async (req, res, next) => {
   const product = await Product.findById(req.params.id);
   if (!product) return next(new AppError("Product not found", 404));
