@@ -394,6 +394,45 @@ async function sendCollabVerificationEmail({ to, code }) {
   }
 }
 
+async function sendSocialInviteEmail({ to, inviteUrl, name, inviterName }) {
+  if (!process.env.RESEND_API_KEY) {
+    logger.warn("RESEND_API_KEY not set — skipping social creator invite email");
+    return;
+  }
+  try {
+    const resend = getResend();
+    await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `You've been invited as a Social Creator on RBstars`,
+      html: `
+        <div style="font-family:Inter,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;border-radius:12px;max-width:560px;margin:0 auto">
+          <div style="text-align:center;margin-bottom:32px">
+            <h1 style="color:#60a5fa;font-size:28px;margin:0">RBstars</h1>
+            <p style="color:#94a3b8;margin:4px 0 0">Social Creator Invitation</p>
+          </div>
+          <h2 style="color:#f1f5f9;font-size:20px">Hey ${name}, you've been invited!</h2>
+          <p style="color:#94a3b8;line-height:1.6">
+            ${inviterName || "The RBstars team"} has invited you to join as a <strong style="color:#34d399">Social Creator</strong> on RBstars. You'll get access to your own creator portal where you can submit your videos and track your earnings.
+          </p>
+          <div style="text-align:center;margin:32px 0">
+            <a href="${inviteUrl}" style="background:linear-gradient(135deg,#059669,#047857);color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;display:inline-block">
+              Set Up My Creator Account
+            </a>
+          </div>
+          <p style="color:#64748b;font-size:13px;text-align:center">
+            This invitation expires in 72 hours. If you didn't expect this, you can ignore this email.
+          </p>
+        </div>
+      `,
+    });
+    logger.info(`Social creator invite email sent to ${to}`);
+  } catch (err) {
+    logger.error("Failed to send social creator invite email:", err.message);
+    throw err;
+  }
+}
+
 module.exports = {
   sendInviteEmail,
   sendVerificationEmail,
@@ -404,4 +443,5 @@ module.exports = {
   sendCancellationEmail,
   sendCollabInviteEmail,
   sendCollabVerificationEmail,
+  sendSocialInviteEmail,
 };
