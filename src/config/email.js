@@ -429,7 +429,6 @@ async function sendSocialInviteEmail({ to, inviteUrl, name, inviterName }) {
     logger.info(`Social creator invite email sent to ${to}`);
   } catch (err) {
     logger.error("Failed to send social creator invite email:", err.message);
-    throw err;
   }
 }
 
