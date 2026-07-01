@@ -4,6 +4,7 @@ const SocialSubmission = require("../models/SocialSubmission");
 const SocialPayout = require("../models/SocialPayout");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const { sendSocialInviteEmail } = require("../config/email");
 
 // ─── HTTP helper ─────────────────────────────────────────────────────────────
 
@@ -321,6 +322,9 @@ exports.adminInviteCreator = catchAsync(async (req, res, next) => {
   await creator.save();
 
   const inviteUrl = `${process.env.FRONTEND_URL}/socials/invite/${rawToken}`;
+  const inviterName = req.panelUser.email;
+
+  await sendSocialInviteEmail({ to: creator.email, inviteUrl, name: creator.name, inviterName });
 
   res.status(201).json({
     success: true,
