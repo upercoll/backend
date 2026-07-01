@@ -44,6 +44,9 @@ const PERMISSIONS = [
   "view_stock",
   "manage_stock",
   "manage_stockers",
+
+  "view_socials",
+  "manage_socials",
 ];
 
 const roleSchema = new mongoose.Schema(
