@@ -34,6 +34,7 @@ const collaboratorSchema = new mongoose.Schema(
     invitedBy: { type: String },
     active: { type: Boolean, default: true },
     lastLogin: { type: Date },
+    isSocialCreator: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
