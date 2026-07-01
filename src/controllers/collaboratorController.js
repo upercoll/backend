@@ -105,15 +105,17 @@ exports.getCollaborator = catchAsync(async (req, res, next) => {
 });
 
 exports.inviteCollaborator = catchAsync(async (req, res, next) => {
-  const { name, email } = req.body;
+  const { name, email, inviteType } = req.body;
   if (!name || !email) return next(new AppError("Name and email are required", 400));
+
+  const portalBase = inviteType === "social" ? "socials" : "collab";
 
   const existing = await Collaborator.findOne({ email: email.toLowerCase() });
   if (existing) {
     if (existing.status === "active") return next(new AppError("This email is already an active collaborator", 400));
     const rawToken = existing.generateInviteToken();
     await existing.save({ validateBeforeSave: false });
-    const inviteUrl = `${process.env.FRONTEND_URL}/collab/invite/${rawToken}`;
+    const inviteUrl = `${process.env.FRONTEND_URL}/${portalBase}/invite/${rawToken}`;
     const inviterName = req.panelUser?.email || "The site owner";
     await sendCollabInviteEmail({ to: email, inviteUrl, name: existing.name, inviterName });
     return res.json({ success: true, message: "Re-invite sent", data: { collaborator: existing.toSafeObject() } });
@@ -128,13 +130,13 @@ exports.inviteCollaborator = catchAsync(async (req, res, next) => {
   const rawToken = collab.generateInviteToken();
   await collab.save();
 
-  const inviteUrl = `${process.env.FRONTEND_URL}/collab/invite/${rawToken}`;
+  const inviteUrl = `${process.env.FRONTEND_URL}/${portalBase}/invite/${rawToken}`;
   const inviterName = req.panelUser?.email || "The site owner";
   await sendCollabInviteEmail({ to: email, inviteUrl, name: collab.name, inviterName });
 
   res.status(201).json({
     success: true,
-    message: "Collaboration invite sent",
+    message: inviteType === "social" ? "Social creator invite sent" : "Collaboration invite sent",
     data: { collaborator: collab.toSafeObject() },
   });
 });
