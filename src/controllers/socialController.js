@@ -364,6 +364,22 @@ exports.adminListCreators = catchAsync(async (req, res) => {
   res.json({ success: true, data: { creators: enriched } });
 });
 
+exports.adminDeleteCreator = catchAsync(async (req, res, next) => {
+  const collab = await Collaborator.findOne({ _id: req.params.collabId, isSocialCreator: true });
+  if (!collab) return next(new AppError("Creator not found", 404));
+
+  const hasPending = await SocialSubmission.exists({
+    collaborator: collab._id,
+    status: { $in: ["in_review", "reviewed", "accepted"] },
+  });
+  if (hasPending) {
+    return next(new AppError("Cannot remove a creator with pending or unpaid submissions. Resolve them first.", 400));
+  }
+
+  await Collaborator.deleteOne({ _id: collab._id });
+  res.json({ success: true, message: "Creator removed." });
+});
+
 exports.adminGetCreator = catchAsync(async (req, res, next) => {
   const collab = await Collaborator.findById(req.params.collabId);
   if (!collab) return next(new AppError("Creator not found", 404));
