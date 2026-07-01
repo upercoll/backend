@@ -146,6 +146,7 @@ router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 const socialCtrl = require("../controllers/socialController");
 router.get("/socials",                                  requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminList);
 router.get("/socials/creators",                         requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminListCreators);
+router.post("/socials/creators/invite",                 requirePermission("manage_socials"),                  socialCtrl.adminInviteCreator);
 router.post("/socials/creators/:collabId/mark-paid",    requirePermission("manage_socials"),                  socialCtrl.adminMarkPaid);
 router.get("/socials/creators/:collabId",               requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetCreator);
 router.patch("/socials/:id/rate",                       requirePermission("manage_socials"),                  socialCtrl.adminSetRate);
