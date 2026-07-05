@@ -48,7 +48,7 @@ exports.getAll = catchAsync(async (req, res) => {
 exports.getOne = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id).populate(
     "items.product",
-    "name slug price gradient"
+    "name slug price gradient imageUrl"
   );
   if (!order) return next(new AppError("Order not found", 404));
   res.json({ success: true, data: order });
