@@ -156,7 +156,12 @@ exports.markStocked = catchAsync(async (req, res, next) => {
     }
   }
 
-  const commission = (request.totalSaleValue * (request.stocker?.commissionRate || 0)) / 100;
+  // Commission is calculated on store price, not the stocker's custom sale price
+  const storeBasedTotal = request.items.reduce(
+    (sum, item) => sum + (item.storePrice || item.salePrice || 0) * (item.quantity || 1),
+    0
+  );
+  const commission = (storeBasedTotal * (request.stocker?.commissionRate || 0)) / 100;
 
   request.status = "stocked";
   request.stockedAt = new Date();
@@ -171,7 +176,7 @@ exports.markStocked = catchAsync(async (req, res, next) => {
   if (request.stocker) {
     await Stocker.findByIdAndUpdate(request.stocker._id, {
       $inc: {
-        totalRevenue: request.totalSaleValue,
+        totalRevenue: storeBasedTotal,
         totalCommission: commission,
         totalStocked: request.items.reduce((sum, i) => sum + i.quantity, 0),
       },
@@ -317,7 +322,8 @@ async function computeUnpaidDeliveries(stocker) {
         if (!stockedProductMap[nameLower]) {
           stockedProductMap[nameLower] = {
             productName: item.productName,
-            salePrice: item.salePrice || 0,
+            // Commission is based on store price, not the stocker's custom price
+            salePrice: item.storePrice || item.salePrice || 0,
           };
         }
       }
