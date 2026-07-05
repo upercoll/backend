@@ -54,6 +54,16 @@ exports.getOne = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: order });
 });
 
+// Find order by orderNumber (used by profile panels to resolve session.orderRef → order data with product images)
+exports.getByRef = catchAsync(async (req, res, next) => {
+  const order = await Order.findOne({ orderNumber: req.params.orderNumber }).populate(
+    "items.product",
+    "name slug price gradient imageUrl"
+  );
+  if (!order) return next(new AppError("Order not found", 404));
+  res.json({ success: true, data: order });
+});
+
 exports.updateStatus = catchAsync(async (req, res, next) => {
   const { status, deliveryStatus, adminNotes, refundReason } = req.body;
 
