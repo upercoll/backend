@@ -45,6 +45,9 @@ const PERMISSIONS = [
   "manage_stock",
   "manage_stockers",
 
+  "view_deliverers",
+  "manage_deliverers",
+
   "view_socials",
   "manage_socials",
 ];
