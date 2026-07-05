@@ -19,6 +19,7 @@ const productCtrl = require("../controllers/productController");
 const promoCtrl = require("../controllers/promoController");
 const settingsCtrl = require("../controllers/settingsController");
 const stockCtrl = require("../controllers/stockController");
+const deliverersCtrl = require("../controllers/deliverersPanelController");
 
 router.post("/auth/owner-login", panelAuthCtrl.ownerLogin);
 router.post("/auth/member-login", panelAuthCtrl.memberLogin);
@@ -64,6 +65,8 @@ router.post("/team/:id/resend-invite", requirePermission(["invite_team", "manage
 router.get("/orders", requirePermission(["view_orders", "manage_orders"]), panelOrdersCtrl.listOrders);
 router.post("/orders/sync-stripe", requirePermission("manage_orders"), panelOrdersCtrl.syncStripePayments);
 router.patch("/orders/bulk-status", requirePermission(["update_order_status", "manage_orders"]), panelOrdersCtrl.bulkUpdateStatus);
+router.get("/orders/ref/:orderNumber", requirePermission(["claim_agent", "monitor_agents", "view_orders", "manage_orders"]), panelOrdersCtrl.getOrderByRef);
+router.patch("/orders/ref/:orderNumber/status", requirePermission(["claim_agent", "monitor_agents", "update_order_status", "manage_orders"]), panelOrdersCtrl.updateOrderStatusByRef);
 router.get("/orders/:id", requirePermission(["view_orders", "manage_orders"]), panelOrdersCtrl.getOrder);
 router.patch("/orders/:id/status", requirePermission(["update_order_status", "manage_orders"]), panelOrdersCtrl.updateOrderStatus);
 router.post("/orders/:id/fulfill", requirePermission(["fulfill_orders", "manage_orders"]), panelOrdersCtrl.fulfillOrder);
@@ -172,5 +175,12 @@ router.post("/stock/stockers/:id/payouts/mark-paid", requirePermission("manage_s
 router.get("/stock/stockers/:id", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.getStockerDetail);
 router.patch("/stock/stockers/:id", requirePermission("manage_stockers"), stockCtrl.updateStocker);
 router.delete("/stock/stockers/:id", requirePermission("manage_stockers"), stockCtrl.deleteStocker);
+
+router.get("/admin/deliverers", requirePermission(["view_deliverers", "manage_deliverers"]), deliverersCtrl.listDeliverers);
+router.post("/admin/deliverers/invite", requirePermission("manage_deliverers"), deliverersCtrl.inviteDeliverer);
+router.get("/admin/deliverers/:id", requirePermission(["view_deliverers", "manage_deliverers"]), deliverersCtrl.getDelivererDetail);
+router.patch("/admin/deliverers/:id", requirePermission("manage_deliverers"), deliverersCtrl.updateDeliverer);
+router.post("/admin/deliverers/:id/mark-paid", requirePermission("manage_deliverers"), deliverersCtrl.markPaid);
+router.delete("/admin/deliverers/:id", ownerOnly, deliverersCtrl.deleteDeliverer);
 
 module.exports = router;
