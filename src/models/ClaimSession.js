@@ -55,6 +55,12 @@ const claimSessionSchema = new mongoose.Schema(
     firstAgentReplyAt: Date,
     resolvedAt: Date,
 
+    delivererAssigned: {
+      delivererId: { type: mongoose.Schema.Types.ObjectId, ref: "Deliverer" },
+      name: String,
+      claimedAt: Date,
+    },
+
     feedback: {
       rating: { type: Number, min: 1, max: 5 },
       comment: String,
