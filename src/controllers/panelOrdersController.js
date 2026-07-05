@@ -84,17 +84,27 @@ exports.getOrder = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: { order: orderObj, claimSession: claim?.toObject() || null } });
 });
 
-exports.updateOrderStatus = catchAsync(async (req, res, next) => {
-  const { status, adminNotes } = req.body;
-  const order = await Order.findById(req.params.id);
+// Lightweight lookup by orderNumber — used by claim-chat sidebars (Queue/OpenChats),
+// which only carry session.orderRef (a human-readable orderNumber), not the order's
+// Mongo _id. Returns the order flat under `data` (not wrapped in { order, claimSession }).
+exports.getOrderByRef = catchAsync(async (req, res, next) => {
+  const order = await Order.findOne({ orderNumber: req.params.orderNumber }).populate(
+    "items.product",
+    "name slug price gradient imageUrl"
+  );
   if (!order) return next(new AppError("Order not found", 404));
+  res.json({ success: true, data: order });
+});
 
-  if (!VALID_STATUSES.includes(status)) return next(new AppError("Invalid status", 400));
+async function performStatusUpdate(order, req) {
+  const { status, adminNotes } = req.body;
+
+  if (!VALID_STATUSES.includes(status)) throw new AppError("Invalid status", 400);
 
   const isPaid = order.payment && order.payment.status === "succeeded";
 
   if (status === "refunded" && !isPaid) {
-    return next(new AppError("Cannot refund an order that has not been paid.", 400));
+    throw new AppError("Cannot refund an order that has not been paid.", 400);
   }
 
   let stripeRefundAmount = null;
@@ -147,6 +157,34 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
     } catch (emailErr) {
       console.error("Failed to send cancellation email:", emailErr.message);
     }
+  }
+
+  return order;
+}
+
+exports.updateOrderStatus = catchAsync(async (req, res, next) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) return next(new AppError("Order not found", 404));
+
+  try {
+    await performStatusUpdate(order, req);
+  } catch (err) {
+    return next(err);
+  }
+
+  res.json({ success: true, data: { order } });
+});
+
+// Same as updateOrderStatus, but looked up by orderNumber — used by claim-chat
+// sidebars (Queue/OpenChats) which only carry session.orderRef, not the Mongo _id.
+exports.updateOrderStatusByRef = catchAsync(async (req, res, next) => {
+  const order = await Order.findOne({ orderNumber: req.params.orderNumber });
+  if (!order) return next(new AppError("Order not found", 404));
+
+  try {
+    await performStatusUpdate(order, req);
+  } catch (err) {
+    return next(err);
   }
 
   res.json({ success: true, data: { order } });
