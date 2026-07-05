@@ -79,6 +79,28 @@ exports.updateStatus = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: order });
 });
 
+// Same as updateStatus, but looked up by orderNumber — used by claim-chat sidebars
+// (Queue/OpenChats) which only carry session.orderRef (a human-readable orderNumber),
+// not the order's Mongo _id.
+exports.updateStatusByRef = catchAsync(async (req, res, next) => {
+  const { status, deliveryStatus, adminNotes, refundReason } = req.body;
+
+  const update = {};
+  if (status) update.status = status;
+  if (deliveryStatus) update["delivery.status"] = deliveryStatus;
+  if (deliveryStatus === "delivered") update["delivery.deliveredAt"] = new Date();
+  if (adminNotes) update.adminNotes = adminNotes;
+  if (refundReason) update.refundReason = refundReason;
+
+  const order = await Order.findOneAndUpdate(
+    { orderNumber: req.params.orderNumber },
+    update,
+    { new: true }
+  );
+  if (!order) return next(new AppError("Order not found", 404));
+  res.json({ success: true, data: order });
+});
+
 exports.getStats = catchAsync(async (req, res) => {
   const [totalOrders, paidOrders, revenueResult, recentOrders] = await Promise.all([
     Order.countDocuments(),
