@@ -39,6 +39,7 @@ router.get("/profile", stockerPanelCtrl.getProfile);
 router.get("/products", stockerPanelCtrl.getProducts);
 router.get("/requests", stockerPanelCtrl.getMyRequests);
 router.post("/requests", stockerPanelCtrl.submitRequest);
+router.patch("/requests/:id/stocked", stockerPanelCtrl.markMyRequestStocked);
 router.get("/stats", stockerPanelCtrl.getMyStats);
 router.get("/sold-deliveries", stockerPanelCtrl.getSoldDeliveries);
 router.get("/payouts", stockerPanelCtrl.getMyPayouts);
