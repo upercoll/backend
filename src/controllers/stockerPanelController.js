@@ -239,7 +239,8 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
         if (!stockedProductMap[nameLower]) {
           stockedProductMap[nameLower] = {
             productName: item.productName,
-            salePrice: item.salePrice || 0,
+            // Commission is based on store price, not the stocker's custom price
+            salePrice: item.storePrice || item.salePrice || 0,
           };
         }
         stockedQuantityMap[nameLower] = (stockedQuantityMap[nameLower] || 0) + (item.quantity || 1);
@@ -325,6 +326,51 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
       totalPaid,
     },
   });
+});
+
+exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
+  const stocker = req.stocker;
+  const request = await StockRequest.findOne({ _id: req.params.id, stocker: stocker._id });
+  if (!request) return next(new AppError("Stock request not found", 404));
+  if (request.status !== "approved") {
+    return next(new AppError("Request must be approved before you can mark it as stocked", 400));
+  }
+
+  // Update product stock counts
+  for (const item of request.items) {
+    if (item.product) {
+      await Product.findByIdAndUpdate(item.product, {
+        $inc: { stock: item.quantity, onHand: item.quantity },
+        outOfStock: false,
+      });
+    }
+  }
+
+  // Commission is based on store price, not the stocker's custom price
+  const storeBasedTotal = request.items.reduce(
+    (sum, item) => sum + (item.storePrice || item.salePrice || 0) * (item.quantity || 1),
+    0
+  );
+  const commission = (storeBasedTotal * (stocker.commissionRate || 0)) / 100;
+
+  request.status = "stocked";
+  request.stockedAt = new Date();
+  request.stockedBy = stocker.email;
+  request.commission = commission;
+  request.commissionRate = stocker.commissionRate;
+  request.paymentSent = true;
+
+  await request.save();
+
+  await Stocker.findByIdAndUpdate(stocker._id, {
+    $inc: {
+      totalRevenue: storeBasedTotal,
+      totalCommission: commission,
+      totalStocked: request.items.reduce((sum, i) => sum + (i.quantity || 1), 0),
+    },
+  });
+
+  res.json({ success: true, data: { request } });
 });
 
 exports.getMyStats = catchAsync(async (req, res) => {
