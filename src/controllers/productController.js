@@ -1,5 +1,6 @@
 const Product = require("../models/Product");
 const Category = require("../models/Category");
+const Game = require("../models/Game");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const APIFeatures = require("../utils/apiFeatures");
@@ -68,7 +69,14 @@ exports.getOne = catchAsync(async (req, res, next) => {
 
   Product.findByIdAndUpdate(product._id, { $inc: { viewCount: 1 } }).catch(() => {});
 
-  res.json({ success: true, data: product });
+  const game = product.game
+    ? await Game.findOne({ slug: product.game }, "bgImageUrl").lean()
+    : null;
+
+  const data = product.toObject();
+  if (game?.bgImageUrl) data.gameBgImageUrl = game.bgImageUrl;
+
+  res.json({ success: true, data });
 });
 
 exports.getRelated = catchAsync(async (req, res, next) => {
