@@ -15,6 +15,7 @@ const gameSchema = new mongoose.Schema(
     imagePublicId: { type: String },
     bannerUrl: { type: String },
     bannerPublicId: { type: String },
+    bgImageUrl: { type: String },
     gradient: {
       from: { type: String, default: "#1e3a5f" },
       to: { type: String, default: "#0f172a" },
