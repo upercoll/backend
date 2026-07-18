@@ -6,6 +6,7 @@ router.get("/", ctrl.getAll);
 router.get("/featured", ctrl.getFeatured);
 router.get("/best-sellers", ctrl.getBestSellers);
 router.get("/game/:game", ctrl.getByGame);
+router.get("/:id/related", ctrl.getRelated);
 router.get("/:id", ctrl.getOne);
 
 router.post("/", protect, adminOnly, ctrl.create);
