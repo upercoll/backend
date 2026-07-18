@@ -21,6 +21,8 @@ const productSchema = new mongoose.Schema(
       to: { type: String, default: "#4c1d95" },
     },
     imageUrl: { type: String },
+    images: [{ type: String, trim: true }],
+    features: [{ type: String, trim: true }],
 
     stock: { type: Number, default: -1 },
     onHand: { type: Number, default: -1 },
