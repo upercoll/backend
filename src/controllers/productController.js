@@ -4,6 +4,22 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const APIFeatures = require("../utils/apiFeatures");
 
+// Multipart/form-data always sends primitives as strings, so array fields
+// (images, features) arrive JSON-encoded from the admin panel. This safely
+// turns them back into real arrays before they hit the schema.
+function parseArrayField(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string" && val.trim()) {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch {
+      return val.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return undefined;
+}
+
 exports.getAll = catchAsync(async (req, res) => {
   const features = new APIFeatures(Product.find({ active: true }), req.query)
     .filter()
@@ -55,6 +71,26 @@ exports.getOne = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: product });
 });
 
+exports.getRelated = catchAsync(async (req, res, next) => {
+  const product = await Product.findOne({
+    $or: [{ _id: req.params.id }, { slug: req.params.id }],
+  });
+  if (!product) return next(new AppError("Product not found", 404));
+
+  const limit = Math.min(20, parseInt(req.query.limit) || 12);
+
+  const related = await Product.find({
+    category: product.category,
+    _id: { $ne: product._id },
+    active: true,
+  })
+    .sort("-bestSeller -featured -salesCount -createdAt")
+    .limit(limit)
+    .populate("category", "name slug icon");
+
+  res.json({ success: true, count: related.length, data: related });
+});
+
 exports.getFeatured = catchAsync(async (req, res) => {
   const products = await Product.find({ featured: true, active: true })
     .sort("-createdAt")
@@ -89,11 +125,23 @@ exports.create = catchAsync(async (req, res, next) => {
       .replace(/[^a-z0-9-]/g, "");
   }
 
+  const images = parseArrayField(req.body.images);
+  if (images) req.body.images = images;
+  const features = parseArrayField(req.body.features);
+  if (features) req.body.features = features;
+  if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
+
   const product = await Product.create(req.body);
   res.status(201).json({ success: true, data: product });
 });
 
 exports.update = catchAsync(async (req, res, next) => {
+  const images = parseArrayField(req.body.images);
+  if (images) req.body.images = images;
+  const features = parseArrayField(req.body.features);
+  if (features) req.body.features = features;
+  if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
+
   const product = await Product.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true,
