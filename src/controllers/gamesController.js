@@ -71,6 +71,7 @@ exports.createGame = catchAsync(async (req, res, next) => {
     imagePublicId,
     bannerUrl,
     bannerPublicId,
+    bgImageUrl: req.body.bgImageUrl || undefined,
     gradient: {
       from: gradientFrom || "#1e3a5f",
       to: gradientTo || "#0f172a",
@@ -86,7 +87,7 @@ exports.updateGame = catchAsync(async (req, res, next) => {
   const game = await Game.findOne({ slug: req.params.slug });
   if (!game) return next(new AppError("Game not found", 404));
 
-  const { name, description, gradientFrom, gradientTo, sortOrder, featured, active, claimTeam, claimTime, claimSchedule } = req.body;
+  const { name, description, gradientFrom, gradientTo, sortOrder, featured, active, claimTeam, claimTime, claimSchedule, bgImageUrl } = req.body;
 
   if (name) game.name = name.trim();
   if (description !== undefined) game.description = description;
@@ -102,6 +103,10 @@ exports.updateGame = catchAsync(async (req, res, next) => {
       const parsed = typeof claimSchedule === "string" ? JSON.parse(claimSchedule) : claimSchedule;
       if (Array.isArray(parsed)) game.claimSchedule = parsed;
     } catch {}
+  }
+
+  if (bgImageUrl !== undefined) {
+    game.bgImageUrl = bgImageUrl || undefined;
   }
 
   if (req.files?.image?.[0]) {
