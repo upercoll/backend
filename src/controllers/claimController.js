@@ -108,6 +108,28 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     }
   }
 
+  // ── Payment guard ────────────────────────────────────────────────────────────
+  // Only allow a NEW claim session to be created when at least one successfully
+  // paid Stripe order exists for this customer.  Existing sessions are returned
+  // as-is (no disruption to live chats), but creating a fresh session requires a
+  // confirmed payment.status === "succeeded" order in the database.
+  if (!existingSession) {
+    const paymentQuery = { "customer.email": emailLower, "payment.status": "succeeded" };
+    if (resolvedOrderRef) paymentQuery.orderNumber = resolvedOrderRef;
+    const paidOrder = await Order.findOne(paymentQuery).select("_id orderNumber").lean();
+    if (!paidOrder) {
+      const msg = resolvedOrderRef
+        ? `No successful payment found for order ${resolvedOrderRef}. Claim chats can only be opened for orders whose payment reached Stripe successfully.`
+        : "No successful payment found for this email address. Claim chats can only be opened after a payment has been confirmed by Stripe.";
+      return next(new AppError(msg, 402));
+    }
+    // Pin orderRef to the confirmed paid order when none was supplied by the client.
+    if (!resolvedOrderRef && paidOrder.orderNumber) {
+      resolvedOrderRef = paidOrder.orderNumber;
+    }
+  }
+  // ── End payment guard ─────────────────────────────────────────────────────────
+
   if (existingSession) {
     // Backfill item/order/game info onto the existing session if it's missing it and
     // this request resolved real data — covers the case where an earlier attempt
