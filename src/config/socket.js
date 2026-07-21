@@ -359,6 +359,12 @@ function initSocket(server) {
 
     socket.on("claim:end", async ({ roomId }) => {
       if (!roomId) return;
+      // Only authenticated agents (panel users or admins) may end a chat.
+      const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+      if (!agentId) {
+        socket.emit("claim:error", { message: "Not authenticated" });
+        return;
+      }
       try {
         const session = await ClaimSession.findOne({ roomId });
         if (!session) return;
@@ -433,6 +439,12 @@ function initSocket(server) {
 
     socket.on("claim:mark_claimed", async ({ roomId }) => {
       if (!roomId) return;
+      // Only authenticated agents (panel users or admins) may mark a claim as delivered.
+      const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+      if (!agentId) {
+        socket.emit("claim:error", { message: "Not authenticated" });
+        return;
+      }
       try {
         const session = await ClaimSession.findOne({ roomId });
         if (!session) return;
