@@ -142,6 +142,44 @@ async function performStatusUpdate(order, req) {
 
   await order.save();
 
+  // When an order is completed, auto-close any open claim session for it so the
+  // customer's chat disappears from their end immediately.
+  if (status === "completed") {
+    try {
+      const { getIO } = require("../config/socket");
+      const io = getIO();
+      const activeClaim = await ClaimSession.findOne({
+        orderRef: order.orderNumber,
+        status: { $in: ["pending", "active"] },
+      });
+      if (activeClaim) {
+        activeClaim.status = "claimed";
+        activeClaim.resolvedAt = new Date();
+        activeClaim.messages.push({
+          sender: "system",
+          text: "Your order has been marked as completed by the team. Items should be in your inventory.",
+          senderName: "System",
+          timestamp: new Date(),
+        });
+        await activeClaim.save();
+        io.to(`claim:${activeClaim.roomId}`).emit("claim:marked_claimed", {
+          message: "Your order has been delivered! Check your inventory.",
+        });
+        io.to("admin-room").emit("admin:claim_status_changed", {
+          roomId: activeClaim.roomId,
+          status: "claimed",
+        });
+        io.to("agent-queue-room").emit("queue:claim_completed", {
+          roomId: activeClaim.roomId,
+          agentId: activeClaim.assignedAgent?.userId,
+          agentName: activeClaim.assignedAgent?.name,
+        });
+      }
+    } catch (_claimErr) {
+      // Non-fatal: order already saved, claim closure is best-effort
+    }
+  }
+
   if (status === "cancelled") {
     try {
       await sendCancellationEmail({
@@ -209,6 +247,41 @@ exports.fulfillOrder = catchAsync(async (req, res, next) => {
   addTimeline(order, `Order marked as completed`, by, trackingNumber ? `Tracking: ${trackingNumber}` : undefined);
 
   await order.save();
+
+  // Auto-close any open claim session so the customer's chat disappears.
+  try {
+    const { getIO } = require("../config/socket");
+    const io = getIO();
+    const activeClaim = await ClaimSession.findOne({
+      orderRef: order.orderNumber,
+      status: { $in: ["pending", "active"] },
+    });
+    if (activeClaim) {
+      activeClaim.status = "claimed";
+      activeClaim.resolvedAt = new Date();
+      activeClaim.messages.push({
+        sender: "system",
+        text: "Your order has been marked as completed by the team. Items should be in your inventory.",
+        senderName: "System",
+        timestamp: new Date(),
+      });
+      await activeClaim.save();
+      io.to(`claim:${activeClaim.roomId}`).emit("claim:marked_claimed", {
+        message: "Your order has been delivered! Check your inventory.",
+      });
+      io.to("admin-room").emit("admin:claim_status_changed", {
+        roomId: activeClaim.roomId,
+        status: "claimed",
+      });
+      io.to("agent-queue-room").emit("queue:claim_completed", {
+        roomId: activeClaim.roomId,
+        agentId: activeClaim.assignedAgent?.userId,
+        agentName: activeClaim.assignedAgent?.name,
+      });
+    }
+  } catch (_claimErr) {
+    // Non-fatal
+  }
 
   res.json({ success: true, data: { order } });
 });
@@ -323,6 +396,46 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
       $push: { timeline: { action: `Bulk status update to "${status}"`, by: req.panelUser?.email || "Admin", timestamp: new Date() } },
     }
   );
+
+  // Auto-close any open claim sessions for bulk-completed orders.
+  if (status === "completed") {
+    try {
+      const { getIO } = require("../config/socket");
+      const io = getIO();
+      const completedOrders = await Order.find({ _id: { $in: idList } }).select("orderNumber");
+      for (const o of completedOrders) {
+        const activeClaim = await ClaimSession.findOne({
+          orderRef: o.orderNumber,
+          status: { $in: ["pending", "active"] },
+        });
+        if (activeClaim) {
+          activeClaim.status = "claimed";
+          activeClaim.resolvedAt = new Date();
+          activeClaim.messages.push({
+            sender: "system",
+            text: "Your order has been marked as completed by the team. Items should be in your inventory.",
+            senderName: "System",
+            timestamp: new Date(),
+          });
+          await activeClaim.save();
+          io.to(`claim:${activeClaim.roomId}`).emit("claim:marked_claimed", {
+            message: "Your order has been delivered! Check your inventory.",
+          });
+          io.to("admin-room").emit("admin:claim_status_changed", {
+            roomId: activeClaim.roomId,
+            status: "claimed",
+          });
+          io.to("agent-queue-room").emit("queue:claim_completed", {
+            roomId: activeClaim.roomId,
+            agentId: activeClaim.assignedAgent?.userId,
+            agentName: activeClaim.assignedAgent?.name,
+          });
+        }
+      }
+    } catch (_claimErr) {
+      // Non-fatal
+    }
+  }
 
   if (status === "cancelled") {
     try {
