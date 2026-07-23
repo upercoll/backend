@@ -180,11 +180,19 @@ function initSocket(server) {
       if (!roomId || !text?.trim()) return;
       try {
         const session = await ClaimSession.findOne({ roomId });
-        if (!session || session.status === "ended") return;
+        if (!session) return;
 
-        const isAgentUser = socket.user || socket.panelUserId;
+        const isAgentUser = !!(socket.user || socket.panelUserId);
         const msgSender = sender === "agent" && isAgentUser ? "agent" : "customer";
         const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : "Customer");
+
+        // Customers can only message in active sessions
+        if (msgSender === "customer" && session.status !== "active") return;
+        // Nobody messages into a closed session
+        if (session.status === "closed") {
+          socket.emit("claim:error", { message: "This chat is closed." });
+          return;
+        }
 
         let autoClaimed = false;
 
@@ -215,6 +223,26 @@ function initSocket(server) {
           ).catch(() => {});
         }
 
+        // When a monitor/owner admin (not the assigned agent) sends their first message,
+        // prepend a "An admin has joined the chat" system message.
+        let adminJoinMsg = null;
+        if (msgSender === "agent" && !autoClaimed) {
+          const assignedId = session.assignedAgent?.userId?.toString();
+          const senderId = (socket.panelUserId || socket.user?.id || socket.user?._id)?.toString();
+          const isNotAssignedAgent = !assignedId || !senderId || senderId !== assignedId;
+          if (!socket.adminJoinedRooms) socket.adminJoinedRooms = new Set();
+          if (isNotAssignedAgent && !socket.adminJoinedRooms.has(roomId)) {
+            socket.adminJoinedRooms.add(roomId);
+            adminJoinMsg = {
+              sender: "system",
+              text: "An admin has joined the chat",
+              senderName: "System",
+              timestamp: new Date(),
+            };
+            session.messages.push(adminJoinMsg);
+          }
+        }
+
         const msg = {
           sender: msgSender,
           text: text.slice(0, 2000),
@@ -232,6 +260,15 @@ function initSocket(server) {
         await session.save();
         const savedMsg = session.messages[session.messages.length - 1];
         const savedMsgObj = savedMsg.toObject();
+
+        // Broadcast admin-joined system message first
+        if (adminJoinMsg) {
+          const savedAdminJoinMsg = session.messages[session.messages.length - 2];
+          io.to(`claim:${roomId}`).emit("claim:new_message", {
+            ...savedAdminJoinMsg.toObject(),
+            roomId,
+          });
+        }
 
         if (autoClaimed) {
           const joinSysMsg = session.messages[session.messages.length - 2];
@@ -402,22 +439,27 @@ function initSocket(server) {
           socket.emit("claim:error", { message: "Not authenticated" });
           return;
         }
-        if (String(session.assignedAgent?.userId) !== String(agentId)) {
+        // Owners/monitors can close any chat; regular agents only their own
+        const isOwnerSocket =
+          socket.user?.isOwner === true ||
+          socket.user?.type === "owner";
+        const isAssignedAgent = String(session.assignedAgent?.userId) === String(agentId);
+        if (!isOwnerSocket && !isAssignedAgent) {
           socket.emit("claim:error", { message: "You can only close chats you handled" });
           return;
         }
-        if (!["active", "claimed", "ended"].includes(session.status)) {
+        if (!isOwnerSocket && !["active", "claimed", "ended"].includes(session.status)) {
           socket.emit("claim:error", { message: "Can only close active or completed chats" });
           return;
         }
 
-        const agentName = socket.agentName || socket.user?.name || "Agent";
+        const agentName = socket.agentName || socket.user?.name || "Admin";
         session.status = "closed";
         session.closedAt = new Date();
         session.closedBy = agentName;
         session.messages.push({
           sender: "system",
-          text: "This chat has been closed by the agent.",
+          text: "This chat has been closed.",
           senderName: "System",
           timestamp: new Date(),
         });
