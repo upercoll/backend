@@ -139,6 +139,26 @@ exports.createClaim = catchAsync(async (req, res, next) => {
       resolvedOrderRef = paidOrder.orderNumber;
     }
   }
+  // ── Additional guard: After resolving orderRef from a paid order, permanently
+  // block re-creation if any completed session already exists for that orderRef.
+  // This catches the case where resolvedOrderRef was null on the earlier checks
+  // but was filled in by the payment guard above.
+  if (resolvedOrderRef) {
+    const alreadyDelivered = await ClaimSession.findOne({
+      contactEmail: emailLower,
+      orderRef: resolvedOrderRef,
+      status: { $in: ["claimed", "ended", "closed"] },
+    }).sort({ updatedAt: -1 });
+    if (alreadyDelivered) {
+      logger.info(`Blocked new claim for already-delivered order ${resolvedOrderRef} (${emailLower})`);
+      return next(
+        new AppError(
+          "This order has already been delivered. If you have a new order, please contact our support team.",
+          403
+        )
+      );
+    }
+  }
   // ── End payment guard ─────────────────────────────────────────────────────────
 
   if (existingSession) {
@@ -432,6 +452,59 @@ exports.updateStatus = catchAsync(async (req, res, next) => {
   }
 
   res.json({ success: true, data: { status: session.status, assignedAgent: session.assignedAgent } });
+});
+
+exports.deleteSession = catchAsync(async (req, res, next) => {
+  if (!req.panelUser.isOwner) return next(new AppError("Owner access required", 403));
+  const session = await ClaimSession.findOne({ roomId: req.params.roomId });
+  if (!session) return next(new AppError("Session not found", 404));
+  await session.deleteOne();
+  try {
+    const io = tryGetIO();
+    if (io) {
+      io.to(`claim:${session.roomId}`).emit("claim:closed", { message: "This chat session has been removed by an administrator." });
+      io.to("admin-room").emit("admin:claim_deleted", { roomId: session.roomId });
+      io.to("agent-queue-room").emit("queue:claim_deleted", { roomId: session.roomId });
+    }
+  } catch {}
+  logger.info(`Owner deleted claim session ${session.roomId}`);
+  res.json({ success: true, message: "Session deleted" });
+});
+
+exports.bulkDeleteClaimed = catchAsync(async (req, res, next) => {
+  if (!req.panelUser.isOwner) return next(new AppError("Owner access required", 403));
+  const { email, roomIds } = req.body;
+
+  let filter = {};
+  if (Array.isArray(roomIds) && roomIds.length > 0) {
+    filter = { roomId: { $in: roomIds } };
+  } else if (email?.trim()) {
+    filter = {
+      contactEmail: email.trim().toLowerCase(),
+      status: { $in: ["claimed", "ended", "closed"] },
+    };
+  } else {
+    return next(new AppError("Provide email or roomIds", 400));
+  }
+
+  const sessions = await ClaimSession.find(filter).select("roomId").lean();
+  const count = sessions.length;
+  if (count === 0) return res.json({ success: true, message: "No sessions found to delete", count: 0 });
+
+  await ClaimSession.deleteMany(filter);
+
+  try {
+    const io = tryGetIO();
+    if (io) {
+      for (const s of sessions) {
+        io.to(`claim:${s.roomId}`).emit("claim:closed", { message: "This chat session has been removed by an administrator." });
+      }
+      io.to("admin-room").emit("admin:claims_bulk_deleted", { count });
+    }
+  } catch {}
+
+  logger.info(`Owner bulk-deleted ${count} claim sessions`);
+  res.json({ success: true, message: `Deleted ${count} session(s)`, count });
 });
 
 exports.getActiveClaims = catchAsync(async (req, res) => {
