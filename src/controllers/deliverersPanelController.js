@@ -39,7 +39,7 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
 });
 
 exports.inviteDeliverer = catchAsync(async (req, res, next) => {
-  const { email, name, commissionRate } = req.body;
+  const { email, name, commissionRate, games } = req.body;
   if (!email) return next(new AppError("Email is required", 400));
 
   const existing = await Deliverer.findOne({ email: email.toLowerCase() });
@@ -55,6 +55,7 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
     inviteExpiry: new Date(Date.now() + 72 * 60 * 60 * 1000),
     status: "invited",
     commissionRate: commissionRate ?? 20,
+    games: Array.isArray(games) ? games : [],
   });
 
   const inviteUrl = `${process.env.FRONTEND_URL}/deliverer/invite/${rawToken}`;
@@ -76,10 +77,11 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const { name, status, commissionRate } = req.body;
+  const { name, status, commissionRate, games } = req.body;
   if (name !== undefined) deliverer.name = name;
   if (status) deliverer.status = status;
   if (commissionRate !== undefined) deliverer.commissionRate = commissionRate;
+  if (games !== undefined) deliverer.games = Array.isArray(games) ? games : [];
 
   await deliverer.save();
   res.json({ success: true, data: { deliverer } });
