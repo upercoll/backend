@@ -22,6 +22,8 @@ const delivererSchema = new mongoose.Schema(
     lifetimeRevenue: { type: Number, default: 0 },
     lifetimeCommission: { type: Number, default: 0 },
     lastPayoutAt: { type: Date },
+    // Game slugs this deliverer is assigned to handle (empty = all games)
+    games: { type: [String], default: [] },
   },
   { timestamps: true }
 );
