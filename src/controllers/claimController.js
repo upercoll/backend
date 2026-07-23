@@ -87,6 +87,17 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Permanent block: if this specific orderRef was already delivered/ended,
+  // never allow a new session to be created for it regardless of time passed.
+  if (!existingSession && resolvedOrderRef) {
+    const completedForOrder = await ClaimSession.findOne({
+      contactEmail: emailLower,
+      orderRef: resolvedOrderRef,
+      status: { $in: ["claimed", "ended"] },
+    }).sort({ updatedAt: -1 });
+    if (completedForOrder) existingSession = completedForOrder;
+  }
+
   // Also return recently closed/ended/claimed sessions so the customer
   // cannot immediately re-create a new session after an agent closes theirs.
   // Only blocks re-creation when the order ref matches (or neither side has one) —
