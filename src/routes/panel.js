@@ -159,6 +159,8 @@ router.get("/socials/:id",                              requirePermission(["view
 const claimCtrl = require("../controllers/claimController");
 router.get("/claims/queue", requirePermission("claim_agent"), claimCtrl.getAgentQueue);
 router.get("/claims/active", requirePermission("monitor_agents"), claimCtrl.getActiveClaims);
+router.post("/claims/bulk-delete", ownerOnly, claimCtrl.bulkDeleteClaimed);
+router.delete("/claims/:roomId", ownerOnly, claimCtrl.deleteSession);
 router.get("/claims/:roomId", requirePermission(["claim_agent", "monitor_agents"]), claimCtrl.getSession);
 router.get("/claims/:roomId/full", requirePermission(["claim_agent", "monitor_agents"]), claimCtrl.getFullSession);
 
