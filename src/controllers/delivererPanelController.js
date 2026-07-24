@@ -103,8 +103,31 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
   if (!["active", "pending"].includes(session.status))
     return next(new AppError("Session is not active", 400));
 
+  // Upload any proof screenshots to Cloudinary
+  let proofImageUrls = [];
+  if (req.files && req.files.length > 0) {
+    try {
+      const { uploadToCloudinary } = require("../config/cloudinary");
+      const uploads = await Promise.all(
+        req.files.map(f => uploadToCloudinary(f.buffer, { folder: "rbstars/deliverer-proofs" }))
+      );
+      proofImageUrls = uploads.map(u => u.secure_url);
+    } catch (err) {
+      const logger = require("../utils/logger");
+      logger.error("Deliverer proof upload failed:", err);
+    }
+  }
+
+  const podNotes = req.body?.notes || "";
+
   session.status = "claimed";
   session.resolvedAt = new Date();
+  session.messages.push({
+    sender: "system",
+    text: "Your order has been delivered! Items should be in your inventory.",
+    senderName: "System",
+    timestamp: new Date(),
+  });
   await session.save();
 
   // Look up order total for commission calculation
@@ -118,7 +141,30 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
 
   const commission = (orderTotal * (deliverer.commissionRate || 20)) / 100;
 
-  // Record delivery
+  // Auto-complete the linked order (same as claim:mark_claimed socket handler)
+  if (session.orderRef) {
+    try {
+      const linkedOrder = await Order.findOne({ orderNumber: session.orderRef });
+      const terminal = ["completed", "cancelled", "refunded", "partially_refunded"];
+      if (linkedOrder && !terminal.includes(linkedOrder.status)) {
+        linkedOrder.status = "completed";
+        linkedOrder.fulfilledAt = new Date();
+        linkedOrder.fulfilledBy = deliverer.name || deliverer.email;
+        linkedOrder.delivery.status = "delivered";
+        linkedOrder.delivery.deliveredAt = new Date();
+        if (!linkedOrder.timeline) linkedOrder.timeline = [];
+        linkedOrder.timeline.push({
+          action: "Order auto-completed via deliverer panel",
+          by: deliverer.name || deliverer.email,
+          details: `Claim session ${session.roomId} marked delivered by deliverer`,
+          timestamp: new Date(),
+        });
+        await linkedOrder.save();
+      }
+    } catch {}
+  }
+
+  // Record delivery (with optional proof)
   await DeliveryRecord.create({
     deliverer: deliverer._id,
     sessionId: session.roomId,
@@ -130,6 +176,8 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
     commissionRate: deliverer.commissionRate || 20,
     commission,
     deliveredAt: new Date(),
+    ...(proofImageUrls.length > 0 && { proofImages: proofImageUrls }),
+    ...(podNotes && { notes: podNotes }),
   });
 
   // Update deliverer stats
@@ -187,6 +235,38 @@ exports.sendMessage = catchAsync(async (req, res, next) => {
   } catch {}
 
   res.json({ success: true, data: { message: msg } });
+});
+
+// GET /api/deliverer/orders — list of paid/completed orders visible to deliverers
+exports.getOrders = catchAsync(async (req, res) => {
+  const { page = 1, limit = 25, search = "", status = "" } = req.query;
+
+  const filter = { "payment.status": "succeeded" };
+  if (status && ["paid", "delivering", "completed", "cancelled"].includes(status)) {
+    filter.status = status;
+  }
+  if (search) {
+    filter.$or = [
+      { orderNumber: { $regex: search, $options: "i" } },
+      { "customer.email": { $regex: search, $options: "i" } },
+      { "customer.robloxUsername": { $regex: search, $options: "i" } },
+    ];
+  }
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [orders, total] = await Promise.all([
+    Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    Order.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, data: { orders, total, pages: Math.ceil(total / Number(limit)) } });
+});
+
+// GET /api/deliverer/orders/by-ref/:orderNumber — fetch an order by number for the sidebar
+exports.getOrderByRef = catchAsync(async (req, res, next) => {
+  const order = await Order.findOne({ orderNumber: req.params.orderNumber }).lean();
+  if (!order) return next(new AppError("Order not found", 404));
+  res.json({ success: true, data: order });
 });
 
 // GET /api/deliverer/stats
