@@ -5,6 +5,7 @@ const Deliverer = require("../models/Deliverer");
 const AppError = require("../utils/AppError");
 const authCtrl = require("../controllers/delivererAuthController");
 const panelCtrl = require("../controllers/delivererPanelController");
+const { upload } = require("../config/cloudinary");
 
 async function delivererAuth(req, res, next) {
   try {
@@ -43,7 +44,9 @@ router.get("/stats", panelCtrl.getStats);
 router.get("/claims", panelCtrl.getClaims);
 router.get("/claims/:roomId", panelCtrl.getSession);
 router.post("/claims/:roomId/claim", panelCtrl.claimSession);
-router.post("/claims/:roomId/deliver", panelCtrl.markDelivered);
+router.post("/claims/:roomId/deliver", upload.array("proofs", 5), panelCtrl.markDelivered);
 router.post("/claims/:roomId/message", panelCtrl.sendMessage);
+router.get("/orders", panelCtrl.getOrders);
+router.get("/orders/by-ref/:orderNumber", panelCtrl.getOrderByRef);
 
 module.exports = router;
