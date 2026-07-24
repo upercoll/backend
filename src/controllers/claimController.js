@@ -143,11 +143,15 @@ exports.createClaim = catchAsync(async (req, res, next) => {
   // block re-creation if any completed session already exists for that orderRef.
   // This catches the case where resolvedOrderRef was null on the earlier checks
   // but was filled in by the payment guard above.
-  if (resolvedOrderRef) {
+  // NOTE: Only runs when no existingSession was found above — if we already have
+  // an existingSession (e.g. a claimed session) we return it below, not a 403.
+  // NOTE: Does NOT include "closed" — a closed (non-delivered) session only
+  // blocks for 30 minutes (handled above); after that the user may reopen.
+  if (!existingSession && resolvedOrderRef) {
     const alreadyDelivered = await ClaimSession.findOne({
       contactEmail: emailLower,
       orderRef: resolvedOrderRef,
-      status: { $in: ["claimed", "ended", "closed"] },
+      status: { $in: ["claimed", "ended"] },
     }).sort({ updatedAt: -1 });
     if (alreadyDelivered) {
       logger.info(`Blocked new claim for already-delivered order ${resolvedOrderRef} (${emailLower})`);
