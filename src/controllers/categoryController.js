@@ -33,8 +33,27 @@ exports.create = catchAsync(async (req, res) => {
   if (!req.body.slug) {
     req.body.slug = req.body.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   }
-  const cat = await Category.create(req.body);
-  res.status(201).json({ success: true, data: cat });
+
+  // Retry with an incrementing suffix on any slug uniqueness collision.
+  // This handles both the compound (slug + game) index and any legacy global
+  // slug index that may still exist on the collection from an earlier schema.
+  const baseSlug = req.body.slug;
+  let attempt = 0;
+  while (attempt <= 10) {
+    try {
+      const cat = await Category.create(req.body);
+      return res.status(201).json({ success: true, data: cat });
+    } catch (err) {
+      // err.code 11000 = duplicate key; err.keyPattern tells us which field(s)
+      if (err.code === 11000 && err.keyPattern && err.keyPattern.slug) {
+        attempt++;
+        req.body.slug = `${baseSlug}-${attempt}`;
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new AppError("Could not create a unique slug for this category. Try a different name.", 409);
 });
 
 exports.update = catchAsync(async (req, res, next) => {
