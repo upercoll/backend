@@ -12,14 +12,20 @@ const proofOfDeliverySchema = new mongoose.Schema(
     agentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "TeamMember",
-      required: true,
+      required: false,
     },
+    // Used when submitted by a Deliverer (not a TeamMember)
+    delivererId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Deliverer",
+    },
+    submittedByType: { type: String, enum: ["agent", "deliverer"], default: "agent" },
     agentName: { type: String, trim: true },
     proofImageUrl: { type: String },
     proofImagePublicId: { type: String },
     proofImageUrls: [{ type: String }],
     proofImagePublicIds: [{ type: String }],
-    estimatedDelivery: { type: String, trim: true, required: true },
+    estimatedDelivery: { type: String, trim: true, default: "Delivered" },
     notes: { type: String, trim: true, maxlength: 500 },
     customerEmail: { type: String, lowercase: true, trim: true },
     robloxUsername: { type: String, trim: true },
