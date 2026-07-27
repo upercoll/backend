@@ -175,8 +175,15 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
 });
 
 exports.getOrdersByGame = catchAsync(async (req, res) => {
+  // Use a strict filter that excludes failed payments so failed orders never
+  // inflate the per-game revenue figures.
+  const STRICT_PAID = {
+    "payment.status": "succeeded",
+    status: { $nin: ["cancelled", "refunded"] },
+  };
+
   const data = await Order.aggregate([
-    { $match: PAID_FILTER },
+    { $match: STRICT_PAID },
     { $unwind: "$items" },
     {
       $group: {
@@ -349,6 +356,97 @@ exports.getStockerCommissions = catchAsync(async (req, res) => {
   }), { totalRevenue: 0, totalCommission: 0 });
 
   res.json({ success: true, data: { commissions: commissions.filter(c => c.productsAdded > 0), totals, period } });
+});
+
+exports.getSiteTraffic = catchAsync(async (req, res) => {
+  const now = new Date();
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    d.setHours(0, 0, 0, 0);
+    days.push(d);
+  }
+  const startDate = days[0];
+
+  const [newCustomersDaily, orderAttemptsDaily, totalCustomers, totalPageViews] = await Promise.all([
+    // New customer signups per day (last 30 days)
+    Customer.aggregate([
+      { $match: { createdAt: { $gte: startDate } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+    // Total order attempts per day (all statuses, last 30 days)
+    Order.aggregate([
+      { $match: { createdAt: { $gte: startDate } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" },
+          },
+          total: { $sum: 1 },
+          paid: {
+            $sum: {
+              $cond: [
+                { $eq: ["$payment.status", "succeeded"] },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]),
+    Customer.countDocuments({ active: { $ne: false } }),
+    // Use ClaimSession count as a proxy for site engagement
+    ClaimSession.countDocuments({ createdAt: { $gte: startDate } }),
+  ]);
+
+  const chart = days.map((d) => {
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+
+    const customerEntry = newCustomersDaily.find(
+      (e) => e._id.year === d.getFullYear() && e._id.month === d.getMonth() + 1 && e._id.day === d.getDate()
+    );
+    const orderEntry = orderAttemptsDaily.find(
+      (e) => e._id.year === d.getFullYear() && e._id.month === d.getMonth() + 1 && e._id.day === d.getDate()
+    );
+
+    return {
+      date: dateStr,
+      label,
+      newCustomers: customerEntry?.count || 0,
+      orderAttempts: orderEntry?.total || 0,
+      paidOrders: orderEntry?.paid || 0,
+    };
+  });
+
+  const totalNewCustomers30d = chart.reduce((s, d) => s + d.newCustomers, 0);
+  const totalOrderAttempts30d = chart.reduce((s, d) => s + d.orderAttempts, 0);
+
+  res.json({
+    success: true,
+    data: {
+      chart,
+      summary: {
+        totalCustomers,
+        newCustomers30d: totalNewCustomers30d,
+        orderAttempts30d: totalOrderAttempts30d,
+        engagementSessions30d: totalPageViews,
+      },
+    },
+  });
 });
 
 exports.getClaimStats = catchAsync(async (req, res) => {
