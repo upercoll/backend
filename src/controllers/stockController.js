@@ -269,6 +269,25 @@ exports.getStockerSales = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.deleteRequest = catchAsync(async (req, res, next) => {
+  const request = await StockRequest.findById(req.params.id);
+  if (!request) return next(new AppError("Stock request not found", 404));
+
+  // Reverse product stock if it was already stocked
+  if (request.status === "stocked") {
+    for (const item of request.items) {
+      if (item.product) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { stock: -item.quantity, onHand: -item.quantity },
+        });
+      }
+    }
+  }
+
+  await StockRequest.findByIdAndDelete(req.params.id);
+  res.json({ success: true, message: "Stock request deleted" });
+});
+
 exports.rejectRequest = catchAsync(async (req, res, next) => {
   const { adminNotes } = req.body;
   const request = await StockRequest.findById(req.params.id);
