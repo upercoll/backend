@@ -33,7 +33,7 @@ exports.getRole = catchAsync(async (req, res, next) => {
 });
 
 exports.createRole = catchAsync(async (req, res, next) => {
-  const { name, description, color, permissions } = req.body;
+  const { name, description, color, permissions, claimGames } = req.body;
   if (!name) return next(new AppError("Role name is required", 400));
 
   const invalid = (permissions || []).filter((p) => !PERMISSIONS.includes(p));
@@ -47,6 +47,7 @@ exports.createRole = catchAsync(async (req, res, next) => {
     description,
     color: color || "#6366f1",
     permissions: permissions || [],
+    claimGames: claimGames || [],
     createdBy: req.panelUser.id,
   });
 
@@ -57,7 +58,7 @@ exports.updateRole = catchAsync(async (req, res, next) => {
   const role = await Role.findById(req.params.id);
   if (!role) return next(new AppError("Role not found", 404));
 
-  const { name, description, color, permissions } = req.body;
+  const { name, description, color, permissions, claimGames } = req.body;
 
   if (permissions) {
     const invalid = permissions.filter((p) => !PERMISSIONS.includes(p));
@@ -68,8 +69,19 @@ exports.updateRole = catchAsync(async (req, res, next) => {
   if (name) role.name = name.trim();
   if (description !== undefined) role.description = description;
   if (color) role.color = color;
+  if (claimGames !== undefined) role.claimGames = claimGames;
 
   await role.save();
+
+  // If claimGames changed, propagate to all active members with this role
+  if (claimGames !== undefined) {
+    const TeamMember = require("../models/TeamMember");
+    await TeamMember.updateMany(
+      { role: role._id, active: true },
+      { $set: { claimGames: claimGames } }
+    );
+  }
+
   res.json({ success: true, data: { role } });
 });
 
