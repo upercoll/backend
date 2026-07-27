@@ -33,6 +33,36 @@ function httpsGet(url) {
   });
 }
 
+// POST JSON, return parsed JSON response
+function httpsPost(url, body, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const payload = JSON.stringify(body);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        ...extraHeaders,
+      },
+    };
+    const req = https.request(options, (res) => {
+      let raw = "";
+      res.on("data", (chunk) => (raw += chunk));
+      res.on("end", () => {
+        try { resolve(JSON.parse(raw)); }
+        catch { reject(new Error("Non-JSON response")); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error("Request timed out")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
 // Fetches raw HTML text, following up to 5 redirects
 function httpsFetchText(url, extraHeaders = {}, _hops = 0) {
   return new Promise((resolve, reject) => {
@@ -143,43 +173,68 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
-async function scrapeYouTubeStats(videoId) {
+// Uses YouTube's internal InnerTube API — same as the mobile app, no key needed.
+// Returns views (reliable) and likes (only available if YOUTUBE_API_KEY is set).
+async function fetchYouTubeStatsInnerTube(videoId) {
+  // Strategy 1: ANDROID_TESTSUITE client — bypasses age gates, returns clean JSON
   try {
-    const html = await httpsFetchText(
-      `https://www.youtube.com/watch?v=${videoId}`,
+    const data = await httpsPost(
+      "https://www.youtube.com/youtubei/v1/player",
       {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        videoId,
+        context: {
+          client: {
+            clientName: "ANDROID_TESTSUITE",
+            clientVersion: "1.9",
+            hl: "en",
+            timeZone: "UTC",
+            utcOffsetMinutes: 0,
+          },
+        },
+      },
+      {
+        "User-Agent": "com.google.android.youtube/17.36.4",
+        "X-YouTube-Client-Name": "30",
+        "X-YouTube-Client-Version": "17.36.4",
+        Origin: "https://www.youtube.com",
       }
     );
+    const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
+    const title = data?.videoDetails?.title || "";
+    const channelName = data?.videoDetails?.author || "";
+    if (views > 0) return { views, likes: 0, title, channelName };
+  } catch {}
 
-    // viewCount is reliably embedded in ytInitialData as a quoted string
-    const viewMatch = html.match(/"viewCount"\s*:\s*"(\d+)"/);
-    const views = viewMatch ? parseInt(viewMatch[1], 10) : 0;
-
-    // Likes: try several patterns YouTube has used over the years
-    let likes = 0;
-    const likePatterns = [
-      // Pattern A: accessibility label "123,456 likes"
-      /"label"\s*:\s*"([\d,]+)\s+likes"/,
-      // Pattern B: simpleText inside like button
-      /"likeCount"\s*:\s*"(\d+)"/,
-      // Pattern C: sentimentBar or like count in page JSON
-      /"defaultText"\s*:\s*\{"simpleText"\s*:\s*"([\d,.KM]+)"\}/,
-    ];
-    for (const pat of likePatterns) {
-      const m = html.match(pat);
-      if (m) {
-        const raw = m[1].replace(/,/g, "");
-        likes = parseInt(raw, 10) || 0;
-        if (likes > 0) break;
+  // Strategy 2: WEB client fallback
+  try {
+    const data = await httpsPost(
+      "https://www.youtube.com/youtubei/v1/player",
+      {
+        videoId,
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20231121.08.00",
+            hl: "en",
+          },
+        },
+      },
+      {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Version": "2.20231121.08.00",
+        Origin: "https://www.youtube.com",
+        Referer: `https://www.youtube.com/watch?v=${videoId}`,
       }
-    }
+    );
+    const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
+    const title = data?.videoDetails?.title || "";
+    const channelName = data?.videoDetails?.author || "";
+    return { views, likes: 0, title, channelName };
+  } catch {}
 
-    return { views, likes };
-  } catch {
-    return { views: 0, likes: 0 };
-  }
+  return { views: 0, likes: 0, title: "", channelName: "" };
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
@@ -240,12 +295,13 @@ async function fetchVideoInfo(platform, url) {
       } catch {}
     }
 
-    // Fallback: scrape the YouTube page for view count when no API key or API returned 0
+    // Fallback: InnerTube API (no key needed, far more reliable than HTML scraping)
     if (views === 0) {
       try {
-        const scraped = await scrapeYouTubeStats(videoId);
-        if (scraped.views > 0) views = scraped.views;
-        if (scraped.likes > 0 && likes === 0) likes = scraped.likes;
+        const inner = await fetchYouTubeStatsInnerTube(videoId);
+        if (inner.views > 0) views = inner.views;
+        if (!title && inner.title) title = inner.title;
+        if (!channelName && inner.channelName) channelName = inner.channelName;
       } catch {}
     }
 
