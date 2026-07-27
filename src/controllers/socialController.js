@@ -173,19 +173,31 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
-// Uses YouTube's internal InnerTube API — same as the mobile app, no key needed.
-// Returns views (reliable) and likes (only available if YOUTUBE_API_KEY is set).
+// YouTube's own public InnerTube key — embedded in their web player, stable for years.
+// Required for server-side InnerTube calls (no browser session/cookies to authenticate).
+const YT_INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+
+function parseInnerTubeResponse(data) {
+  const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
+  const title = data?.videoDetails?.title || "";
+  const channelName = data?.videoDetails?.author || "";
+  return { views, title, channelName };
+}
+
 async function fetchYouTubeStatsInnerTube(videoId) {
-  // Strategy 1: ANDROID_TESTSUITE client — bypasses age gates, returns clean JSON
+  const baseUrl = `https://www.youtube.com/youtubei/v1/player?key=${YT_INNERTUBE_KEY}&prettyPrint=false`;
+
+  // Strategy 1: ANDROID client — most reliable for view counts server-side
   try {
     const data = await httpsPost(
-      "https://www.youtube.com/youtubei/v1/player",
+      baseUrl,
       {
         videoId,
         context: {
           client: {
-            clientName: "ANDROID_TESTSUITE",
-            clientVersion: "1.9",
+            clientName: "ANDROID",
+            clientVersion: "17.36.4",
+            androidSdkVersion: 30,
             hl: "en",
             timeZone: "UTC",
             utcOffsetMinutes: 0,
@@ -193,22 +205,20 @@ async function fetchYouTubeStatsInnerTube(videoId) {
         },
       },
       {
-        "User-Agent": "com.google.android.youtube/17.36.4",
-        "X-YouTube-Client-Name": "30",
+        "User-Agent": "com.google.android.youtube/17.36.4 (Linux; U; Android 11) gzip",
+        "X-YouTube-Client-Name": "3",
         "X-YouTube-Client-Version": "17.36.4",
         Origin: "https://www.youtube.com",
       }
     );
-    const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
-    const title = data?.videoDetails?.title || "";
-    const channelName = data?.videoDetails?.author || "";
-    if (views > 0) return { views, likes: 0, title, channelName };
+    const parsed = parseInnerTubeResponse(data);
+    if (parsed.views > 0) return { ...parsed, likes: 0 };
   } catch {}
 
   // Strategy 2: WEB client fallback
   try {
     const data = await httpsPost(
-      "https://www.youtube.com/youtubei/v1/player",
+      baseUrl,
       {
         videoId,
         context: {
@@ -228,10 +238,8 @@ async function fetchYouTubeStatsInnerTube(videoId) {
         Referer: `https://www.youtube.com/watch?v=${videoId}`,
       }
     );
-    const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
-    const title = data?.videoDetails?.title || "";
-    const channelName = data?.videoDetails?.author || "";
-    return { views, likes: 0, title, channelName };
+    const parsed = parseInnerTubeResponse(data);
+    return { ...parsed, likes: 0 };
   } catch {}
 
   return { views: 0, likes: 0, title: "", channelName: "" };
