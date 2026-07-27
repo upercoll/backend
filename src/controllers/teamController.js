@@ -105,6 +105,10 @@ exports.updateMember = catchAsync(async (req, res, next) => {
     const role = await Role.findById(roleId);
     if (!role || !role.active) return next(new AppError("Role not found", 404));
     member.role = roleId;
+    // Auto-apply the role's claimGames if claimGames not explicitly provided in this request
+    if (claimGames === undefined && role.claimGames && role.claimGames.length > 0) {
+      member.claimGames = role.claimGames;
+    }
   }
   if (claimGames !== undefined) member.claimGames = claimGames;
   if (claimCategories !== undefined) member.claimCategories = claimCategories;
