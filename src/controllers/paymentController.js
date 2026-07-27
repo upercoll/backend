@@ -249,6 +249,11 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
       ).then(p => {
         if (p && p.stock <= 0) Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
       }).catch(() => {});
+      // Also decrement onHand (physical inventory) when items are sold
+      Product.findOneAndUpdate(
+        { _id: product, onHand: { $gte: quantity } },
+        { $inc: { onHand: -quantity } }
+      ).catch(() => {});
     });
 
     fireOrderConfirmationEmail(order);
@@ -353,6 +358,11 @@ exports.webhook = catchAsync(async (req, res, next) => {
           ).then(p => {
             if (p && p.stock <= 0) Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
           }).catch(() => {});
+          // Also decrement onHand (physical inventory) when items are sold
+          Product.findOneAndUpdate(
+            { _id: product, onHand: { $gte: quantity } },
+            { $inc: { onHand: -quantity } }
+          ).catch(() => {});
         });
         logger.info(`Order paid via webhook: ${order.orderNumber}`);
         fireOrderConfirmationEmail(order);
