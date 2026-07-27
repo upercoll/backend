@@ -58,6 +58,8 @@ const roleSchema = new mongoose.Schema(
     description: { type: String, trim: true },
     color: { type: String, default: "#6366f1" },
     permissions: [{ type: String, enum: PERMISSIONS }],
+    // Games auto-assigned to members with this role (used when claim_agent permission is set)
+    claimGames: [{ type: String }],
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     active: { type: Boolean, default: true },
   },
