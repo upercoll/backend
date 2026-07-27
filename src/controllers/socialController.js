@@ -6,7 +6,7 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { sendSocialInviteEmail } = require("../config/email");
 
-// ─── HTTP helper ─────────────────────────────────────────────────────────────
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
@@ -31,6 +31,78 @@ function httpsGet(url) {
       reject(new Error("Request timed out"));
     });
   });
+}
+
+// Fetches raw HTML text, following up to 5 redirects
+function httpsFetchText(url, extraHeaders = {}, _hops = 0) {
+  return new Promise((resolve, reject) => {
+    if (_hops > 5) return reject(new Error("Too many redirects"));
+    const parsedUrl = new URL(url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      path: parsedUrl.pathname + parsedUrl.search,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        ...extraHeaders,
+      },
+    };
+    const req = https.get(options, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const next = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : `https://${parsedUrl.hostname}${res.headers.location}`;
+        res.resume();
+        return httpsFetchText(next, extraHeaders, _hops + 1).then(resolve).catch(reject);
+      }
+      let raw = "";
+      res.on("data", (chunk) => (raw += chunk));
+      res.on("end", () => resolve(raw));
+    });
+    req.on("error", reject);
+    req.setTimeout(12000, () => { req.destroy(); reject(new Error("Request timed out")); });
+  });
+}
+
+// ─── Platform stat scrapers ───────────────────────────────────────────────────
+
+async function scrapeTikTokStats(url) {
+  try {
+    const html = await httpsFetchText(url);
+    // TikTok embeds video stats inside multiple possible JSON blobs
+    // playCount = views, diggCount = likes
+    const viewMatch = html.match(/"playCount"\s*:\s*(\d+)/);
+    const likeMatch = html.match(/"diggCount"\s*:\s*(\d+)/);
+    return {
+      views: viewMatch ? parseInt(viewMatch[1], 10) : 0,
+      likes: likeMatch ? parseInt(likeMatch[1], 10) : 0,
+    };
+  } catch {
+    return { views: 0, likes: 0 };
+  }
+}
+
+async function scrapeYouTubeStats(videoId) {
+  try {
+    const html = await httpsFetchText(
+      `https://www.youtube.com/watch?v=${videoId}`,
+      {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      }
+    );
+    const viewMatch = html.match(/"viewCount"\s*:\s*"(\d+)"/);
+    // likeCount is hidden on the page but sometimes in ytInitialData
+    const likeMatch = html.match(/"defaultText"\s*:\s*\{\s*"accessibility"\s*:\s*\{\s*"accessibilityData"\s*:\s*\{\s*"label"\s*:\s*"([\d,]+) likes"/);
+    return {
+      views: viewMatch ? parseInt(viewMatch[1], 10) : 0,
+      likes: likeMatch ? parseInt(likeMatch[1].replace(/,/g, ""), 10) : 0,
+    };
+  } catch {
+    return { views: 0, likes: 0 };
+  }
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
@@ -74,7 +146,7 @@ async function fetchVideoInfo(platform, url) {
       channelName = oe.author_name || "";
     } catch {}
 
-    // YouTube Data API v3 for statistics (only if key is configured)
+    // Try YouTube Data API v3 first (best quality, requires key)
     if (process.env.YOUTUBE_API_KEY) {
       try {
         const stats = await httpsGet(
@@ -91,6 +163,15 @@ async function fetchVideoInfo(platform, url) {
       } catch {}
     }
 
+    // Fallback: scrape the YouTube page for view count when no API key or API returned 0
+    if (views === 0) {
+      try {
+        const scraped = await scrapeYouTubeStats(videoId);
+        if (scraped.views > 0) views = scraped.views;
+        if (scraped.likes > 0 && likes === 0) likes = scraped.likes;
+      } catch {}
+    }
+
     return { videoId, platform: "youtube", title, thumbnail, channelName, views, likes };
   }
 
@@ -99,7 +180,10 @@ async function fetchVideoInfo(platform, url) {
     let title = "";
     let thumbnail = "";
     let channelName = "";
+    let views = 0;
+    let likes = 0;
 
+    // oEmbed gives us title/thumbnail/author but no stats
     try {
       const oe = await httpsGet(
         `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`
@@ -109,14 +193,21 @@ async function fetchVideoInfo(platform, url) {
       channelName = oe.author_name || "";
     } catch {}
 
+    // Scrape the TikTok page for real view/like counts
+    try {
+      const scraped = await scrapeTikTokStats(url);
+      views = scraped.views;
+      likes = scraped.likes;
+    } catch {}
+
     return {
       videoId: videoId || null,
       platform: "tiktok",
       title,
       thumbnail,
       channelName,
-      views: 0,
-      likes: 0,
+      views,
+      likes,
     };
   }
 
