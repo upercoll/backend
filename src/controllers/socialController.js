@@ -414,31 +414,64 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
   const collab = await Collaborator.findById(req.params.collabId);
   if (!collab) return next(new AppError("Creator not found", 404));
 
+  // Sort oldest first so partial payouts cover the earliest accepted submissions
   const acceptedSubs = await SocialSubmission.find({
     collaborator: collab._id,
     status: "accepted",
-  });
+  }).sort({ acceptedAt: 1 });
 
   if (acceptedSubs.length === 0) {
     return next(new AppError("No accepted submissions to pay out", 400));
   }
 
-  const totalAmount = parseFloat(
+  const totalOwed = parseFloat(
     acceptedSubs.reduce((sum, s) => sum + (s.offeredAmount || 0), 0).toFixed(2)
   );
 
+  // Optional partial payout: only pay up to partialAmount
+  const { partialAmount } = req.body;
+  let subsToMark = acceptedSubs;
+  let payoutAmount = totalOwed;
+
+  if (partialAmount != null) {
+    const partial = parseFloat(partialAmount);
+    if (isNaN(partial) || partial <= 0) {
+      return next(new AppError("partialAmount must be a positive number", 400));
+    }
+    if (partial > totalOwed) {
+      return next(new AppError(`Partial amount ($${partial}) exceeds total owed ($${totalOwed})`, 400));
+    }
+
+    // Select submissions from oldest until we hit the partial amount
+    subsToMark = [];
+    let running = 0;
+    for (const s of acceptedSubs) {
+      const amt = s.offeredAmount || 0;
+      if (running + amt > partial + 0.001) break; // stop before exceeding
+      subsToMark.push(s);
+      running = parseFloat((running + amt).toFixed(2));
+    }
+
+    if (subsToMark.length === 0) {
+      return next(new AppError("Partial amount is less than any single accepted submission's payout", 400));
+    }
+    payoutAmount = parseFloat(
+      subsToMark.reduce((sum, s) => sum + (s.offeredAmount || 0), 0).toFixed(2)
+    );
+  }
+
   const payout = await SocialPayout.create({
     collaborator: collab._id,
-    amount: totalAmount,
-    submissionCount: acceptedSubs.length,
-    submissionIds: acceptedSubs.map((s) => s._id),
+    amount: payoutAmount,
+    submissionCount: subsToMark.length,
+    submissionIds: subsToMark.map((s) => s._id),
     periodEnd: new Date(),
     paidAt: new Date(),
     paidBy: req.panelUser.email,
   });
 
   await SocialSubmission.updateMany(
-    { _id: { $in: acceptedSubs.map((s) => s._id) } },
+    { _id: { $in: subsToMark.map((s) => s._id) } },
     {
       status: "paid",
       paidAt: new Date(),
@@ -449,6 +482,40 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
 
   res.json({
     success: true,
-    data: { payout, count: acceptedSubs.length, totalAmount },
+    data: { payout, count: subsToMark.length, totalAmount: payoutAmount },
   });
+});
+
+exports.adminRefreshViews = catchAsync(async (req, res, next) => {
+  const sub = await SocialSubmission.findById(req.params.id);
+  if (!sub) return next(new AppError("Submission not found", 404));
+  if (sub.status === "paid") {
+    return next(new AppError("Cannot refresh views on a paid submission", 400));
+  }
+
+  let updatedViews = sub.views;
+  let updatedLikes = sub.likes;
+
+  try {
+    const info = await fetchVideoInfo(sub.platform, sub.url);
+    updatedViews = info.views;
+    updatedLikes = info.likes;
+    if (!sub.title && info.title) sub.title = info.title;
+    if (!sub.thumbnail && info.thumbnail) sub.thumbnail = info.thumbnail;
+    if (!sub.channelName && info.channelName) sub.channelName = info.channelName;
+  } catch (e) {
+    return next(new AppError(`Could not refresh views: ${e.message}`, 502));
+  }
+
+  sub.views = updatedViews;
+  sub.likes = updatedLikes;
+
+  // If the rate was set per_view, recalculate the offered amount
+  if (sub.rateType === "per_view" && sub.ratePerView && sub.status !== "accepted") {
+    sub.offeredAmount = parseFloat((sub.ratePerView * updatedViews).toFixed(2));
+  }
+
+  await sub.save();
+
+  res.json({ success: true, data: { submission: sub } });
 });
