@@ -68,20 +68,79 @@ function httpsFetchText(url, extraHeaders = {}, _hops = 0) {
 
 // ─── Platform stat scrapers ───────────────────────────────────────────────────
 
-async function scrapeTikTokStats(url) {
+async function scrapeTikTokStats(url, videoId) {
+  // Strategy 1: TikTok internal item-detail API (works without auth most of the time)
+  if (videoId) {
+    try {
+      const apiUrl =
+        `https://www.tiktok.com/api/item/detail/?itemId=${videoId}` +
+        `&aid=1988&app_name=tiktok_web&device_platform=web_pc`;
+      const data = await httpsGet(apiUrl);
+      const stats =
+        data?.itemInfo?.itemStruct?.stats ||
+        data?.itemInfo?.itemStruct?.statsV2;
+      if (stats) {
+        const views =
+          parseInt(stats.playCount || stats.videoViews || 0, 10);
+        const likes =
+          parseInt(stats.diggCount || stats.heartCount || 0, 10);
+        if (views > 0 || likes > 0) return { views, likes };
+      }
+    } catch {}
+  }
+
+  // Strategy 2: scrape HTML – try several known JSON embedding patterns
   try {
     const html = await httpsFetchText(url);
-    // TikTok embeds video stats inside multiple possible JSON blobs
-    // playCount = views, diggCount = likes
-    const viewMatch = html.match(/"playCount"\s*:\s*(\d+)/);
-    const likeMatch = html.match(/"diggCount"\s*:\s*(\d+)/);
-    return {
-      views: viewMatch ? parseInt(viewMatch[1], 10) : 0,
-      likes: likeMatch ? parseInt(likeMatch[1], 10) : 0,
-    };
-  } catch {
-    return { views: 0, likes: 0 };
-  }
+
+    // Pattern A – __NEXT_DATA__ (newer TikTok SSR)
+    try {
+      const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>(\{.*?\})<\/script>/s);
+      if (nd) {
+        const json = JSON.parse(nd[1]);
+        // Drill into props.pageProps.itemInfo.itemStruct.stats
+        const stats =
+          json?.props?.pageProps?.itemInfo?.itemStruct?.stats ||
+          json?.props?.pageProps?.videoData?.itemInfos;
+        if (stats) {
+          const views = parseInt(stats.playCount || stats.videoViews || 0, 10);
+          const likes = parseInt(stats.diggCount || stats.heartCount || 0, 10);
+          if (views > 0 || likes > 0) return { views, likes };
+        }
+      }
+    } catch {}
+
+    // Pattern B – SIGI_STATE (older TikTok SSR)
+    try {
+      const sg = html.match(/window\["SIGI_STATE"\]\s*=\s*(\{.+?\});\s*window\[/s);
+      if (sg) {
+        const json = JSON.parse(sg[1]);
+        const items = json?.ItemModule;
+        if (items) {
+          const item = Object.values(items)[0] as any;
+          const stats = item?.stats;
+          if (stats) {
+            return {
+              views: parseInt(stats.playCount || 0, 10),
+              likes: parseInt(stats.diggCount || 0, 10),
+            };
+          }
+        }
+      }
+    } catch {}
+
+    // Pattern C – raw JSON blobs anywhere in the page (legacy fallback)
+    const viewMatch = html.match(/"playCount"\s*:\s*"?(\d+)"?/);
+    const likeMatch = html.match(/"diggCount"\s*:\s*"?(\d+)"?/);
+    if (viewMatch || likeMatch) {
+      return {
+        views: viewMatch ? parseInt(viewMatch[1], 10) : 0,
+        likes: likeMatch ? parseInt(likeMatch[1], 10) : 0,
+      };
+    }
+  } catch {}
+
+  return { views: 0, likes: 0 };
 }
 
 async function scrapeYouTubeStats(videoId) {
@@ -93,13 +152,31 @@ async function scrapeYouTubeStats(videoId) {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       }
     );
+
+    // viewCount is reliably embedded in ytInitialData as a quoted string
     const viewMatch = html.match(/"viewCount"\s*:\s*"(\d+)"/);
-    // likeCount is hidden on the page but sometimes in ytInitialData
-    const likeMatch = html.match(/"defaultText"\s*:\s*\{\s*"accessibility"\s*:\s*\{\s*"accessibilityData"\s*:\s*\{\s*"label"\s*:\s*"([\d,]+) likes"/);
-    return {
-      views: viewMatch ? parseInt(viewMatch[1], 10) : 0,
-      likes: likeMatch ? parseInt(likeMatch[1].replace(/,/g, ""), 10) : 0,
-    };
+    const views = viewMatch ? parseInt(viewMatch[1], 10) : 0;
+
+    // Likes: try several patterns YouTube has used over the years
+    let likes = 0;
+    const likePatterns = [
+      // Pattern A: accessibility label "123,456 likes"
+      /"label"\s*:\s*"([\d,]+)\s+likes"/,
+      // Pattern B: simpleText inside like button
+      /"likeCount"\s*:\s*"(\d+)"/,
+      // Pattern C: sentimentBar or like count in page JSON
+      /"defaultText"\s*:\s*\{"simpleText"\s*:\s*"([\d,.KM]+)"\}/,
+    ];
+    for (const pat of likePatterns) {
+      const m = html.match(pat);
+      if (m) {
+        const raw = m[1].replace(/,/g, "");
+        likes = parseInt(raw, 10) || 0;
+        if (likes > 0) break;
+      }
+    }
+
+    return { views, likes };
   } catch {
     return { views: 0, likes: 0 };
   }
@@ -195,7 +272,7 @@ async function fetchVideoInfo(platform, url) {
 
     // Scrape the TikTok page for real view/like counts
     try {
-      const scraped = await scrapeTikTokStats(url);
+      const scraped = await scrapeTikTokStats(url, videoId);
       views = scraped.views;
       likes = scraped.likes;
     } catch {}
