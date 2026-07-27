@@ -180,6 +180,29 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
     ...(podNotes && { notes: podNotes }),
   });
 
+  // Also create a ProofOfDelivery entry so it shows in the admin POD panel
+  try {
+    const ProofOfDelivery = require("../models/ProofOfDelivery");
+    await ProofOfDelivery.create({
+      claimSessionId: session._id,
+      roomId: session.roomId,
+      orderRef: session.orderRef || undefined,
+      delivererId: deliverer._id,
+      submittedByType: "deliverer",
+      agentName: deliverer.name || deliverer.email,
+      proofImageUrl: proofImageUrls[0] || undefined,
+      proofImageUrls,
+      estimatedDelivery: "Delivered",
+      notes: podNotes || undefined,
+      customerEmail: session.contactEmail || undefined,
+      robloxUsername: session.robloxUsername,
+      game: session.game || undefined,
+    });
+  } catch (podErr) {
+    const logger = require("../utils/logger");
+    logger.error("Failed to create ProofOfDelivery for deliverer:", podErr.message);
+  }
+
   // Update deliverer stats
   await Deliverer.findByIdAndUpdate(deliverer._id, {
     $inc: {
