@@ -159,13 +159,9 @@ exports.update = catchAsync(async (req, res, next) => {
 });
 
 exports.delete = catchAsync(async (req, res, next) => {
-  const product = await Product.findByIdAndUpdate(
-    req.params.id,
-    { active: false },
-    { new: true }
-  );
+  const product = await Product.findByIdAndDelete(req.params.id);
   if (!product) return next(new AppError("Product not found", 404));
-  res.json({ success: true, message: "Product deleted" });
+  res.json({ success: true, message: "Product permanently deleted" });
 });
 
 exports.toggleStock = catchAsync(async (req, res, next) => {
