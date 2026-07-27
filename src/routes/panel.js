@@ -44,6 +44,7 @@ router.get("/analytics/top-products", requirePermission("view_analytics"), analy
 router.get("/analytics/claims", requirePermission("view_analytics"), analyticsCtrl.getClaimStats);
 router.get("/analytics/sales-summary", requirePermission("view_analytics"), analyticsCtrl.getSalesSummary);
 router.get("/analytics/conversion", requirePermission("view_analytics"), analyticsCtrl.getConversionRate);
+router.get("/analytics/traffic", requirePermission("view_analytics"), analyticsCtrl.getSiteTraffic);
 router.get("/analytics/stocker-commissions", ownerOnly, stockCtrl.getStockerStats);
 
 router.get("/roles/permissions", requirePermission("manage_roles"), rolesCtrl.getPermissions);
@@ -170,6 +171,7 @@ router.get("/stock/requests/:id", requirePermission(["manage_stock", "view_stock
 router.patch("/stock/requests/:id/approve", requirePermission("manage_stock"), stockCtrl.approveRequest);
 router.patch("/stock/requests/:id/stocked", requirePermission("manage_stock"), stockCtrl.markStocked);
 router.patch("/stock/requests/:id/reject", requirePermission("manage_stock"), stockCtrl.rejectRequest);
+router.delete("/stock/requests/:id", requirePermission("manage_stock"), stockCtrl.deleteRequest);
 router.get("/stock/stockers", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.listStockers);
 router.post("/stock/stockers/invite", requirePermission("manage_stockers"), stockCtrl.inviteStocker);
 router.get("/stock/stockers/:id/sales", requirePermission(["manage_stockers", "view_stock"]), stockCtrl.getStockerSales);
