@@ -147,7 +147,7 @@ async function scrapeTikTokStats(url, videoId) {
         const json = JSON.parse(sg[1]);
         const items = json?.ItemModule;
         if (items) {
-          const item = Object.values(items)[0] as any;
+          const item = Object.values(items)[0];
           const stats = item?.stats;
           if (stats) {
             return {
