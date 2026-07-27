@@ -154,6 +154,7 @@ router.post("/socials/creators/:collabId/mark-paid",    requirePermission("manag
 router.delete("/socials/creators/:collabId",            requirePermission("manage_socials"),                  socialCtrl.adminDeleteCreator);
 router.get("/socials/creators/:collabId",               requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetCreator);
 router.patch("/socials/:id/rate",                       requirePermission("manage_socials"),                  socialCtrl.adminSetRate);
+router.post("/socials/:id/refresh-views",               requirePermission("manage_socials"),                  socialCtrl.adminRefreshViews);
 router.get("/socials/:id",                              requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetOne);
 
 const claimCtrl = require("../controllers/claimController");
