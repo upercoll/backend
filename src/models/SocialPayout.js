@@ -12,6 +12,12 @@ const socialPayoutSchema = new mongoose.Schema(
     submissionIds: [
       { type: mongoose.Schema.Types.ObjectId, ref: "SocialSubmission" },
     ],
+    allocations: [{
+      submission: { type: mongoose.Schema.Types.ObjectId, ref: "SocialSubmission" },
+      amount: { type: Number, required: true },
+    }],
+    paymentMethod: { type: String, default: "" },
+    proofUrl: { type: String, default: "" },
     periodEnd: { type: Date },
     paidAt: { type: Date },
     paidBy: { type: String },
