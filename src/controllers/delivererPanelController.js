@@ -45,7 +45,6 @@ exports.getClaims = catchAsync(async (req, res) => {
       "delivererAssigned.delivererId": delivererId,
     })
       .sort({ resolvedAt: -1 })
-      .limit(30)
       .select("-messages -__v"),
   ]);
 
