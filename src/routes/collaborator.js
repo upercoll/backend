@@ -34,6 +34,7 @@ router.get("/social/payouts",     collabAuth, socialCtrl.creatorGetPayouts);
 router.post("/social/preview",    collabAuth, socialCtrl.creatorPreview);
 router.post("/social/submit",     collabAuth, socialCtrl.creatorSubmit);
 router.post("/social/:id/accept", collabAuth, socialCtrl.creatorAccept);
+router.post("/social/request-payout", collabAuth, socialCtrl.creatorRequestPayout);
 
 router.use(panelAuth);
 router.use(ownerOnly);
