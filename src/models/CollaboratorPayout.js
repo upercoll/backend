@@ -30,6 +30,11 @@ const collaboratorPayoutSchema = new mongoose.Schema(
       default: "paid",
     },
     amount: { type: Number, required: true },
+    allocations: [{
+      orderId: { type: String },
+      productId: { type: String },
+      amount: { type: Number, required: true },
+    }],
     periodStart: { type: Date },
     periodEnd: { type: Date },
     paidAt: { type: Date },
