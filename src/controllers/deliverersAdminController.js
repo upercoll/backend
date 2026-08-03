@@ -84,15 +84,18 @@ function normalizeAssignments(assignments, fallbackRate) {
 
   const seenGames = new Set();
   return assignments.map((assignment) => {
-    const game = String(assignment?.game || "").trim();
-    const commissionRate = Number(assignment?.commissionRate);
+    const game = String(
+      typeof assignment === "string" ? assignment : assignment?.game || ""
+    ).trim();
+    const rawRate = typeof assignment === "string" ? fallbackRate : assignment?.commissionRate;
+    const commissionRate = Number(rawRate);
     if (!game) throw new AppError("Every assignment must include a game", 400);
     if (seenGames.has(game)) throw new AppError("A game can only be assigned once", 400);
     if (!Number.isFinite(commissionRate) || commissionRate < 0 || commissionRate > 100) {
       throw new AppError("Each game commission rate must be between 0 and 100", 400);
     }
     seenGames.add(game);
-    return { game, commissionRate: assignment.commissionRate ?? fallbackRate };
+    return { game, commissionRate };
   });
 }
 
@@ -109,10 +112,15 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
     : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: deliverer.commissionRate ?? 20 })) : undefined);
   if (assignmentInput !== undefined) {
     const normalizedAssignments = normalizeAssignments(assignmentInput, deliverer.commissionRate ?? 20);
-    deliverer.assignments = normalizedAssignments;
-    // Keep the legacy field synchronized because older delivery records and
-    // integrations still expect it.
-    deliverer.games = normalizedAssignments.map((assignment) => assignment.game);
+    // Save both representations in the same update.  The assignment modal and
+    // the older delivery-team screen use different formats, and other delivery
+    // flows still read `games`.
+    deliverer.set({
+      assignments: normalizedAssignments,
+      games: normalizedAssignments.map((assignment) => assignment.game),
+    });
+    deliverer.markModified("assignments");
+    deliverer.markModified("games");
   }
 
   await deliverer.save();
