@@ -6,6 +6,10 @@ const stockerPayoutSchema = new mongoose.Schema(
     amount: { type: Number, required: true, min: 0 },
     commissionRate: { type: Number, default: 0 },
     deliveryCount: { type: Number, default: 0 },
+    allocations: [{
+      request: { type: mongoose.Schema.Types.ObjectId, ref: "StockRequest" },
+      amount: { type: Number, required: true },
+    }],
     periodStart: { type: Date },
     periodEnd: { type: Date },
     notes: { type: String, trim: true, default: "" },
