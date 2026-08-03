@@ -144,34 +144,56 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
-// The player endpoint can be rejected by YouTube depending on the server IP.
-// The public watch page still exposes the view count in both structured metadata
-// and player JSON, so use it as a no-key fallback before returning zero views.
+function streamYouTubeWatchPage(url, _hops = 0) {
+  return new Promise((resolve, reject) => {
+    if (_hops > 5) return reject(new Error("Too many YouTube redirects"));
+    const parsed = new URL(url);
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    const req = https.get({
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: "https://www.youtube.com/",
+      },
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const next = res.headers.location.startsWith("http") ? res.headers.location : `https://${parsed.hostname}${res.headers.location}`;
+        res.resume();
+        return streamYouTubeWatchPage(next, _hops + 1).then(finish).catch(reject);
+      }
+      let raw = "";
+      res.on("data", (chunk) => {
+        if (settled) return;
+        raw += chunk.toString();
+        const viewMatch = raw.match(/"viewCount"\s*:\s*"?(\d+)"?/);
+        if (!viewMatch) return;
+        const title = raw.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
+        const channelName = raw.match(/"ownerChannelName"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') || "";
+        finish({ views: parseInt(viewMatch[1], 10) || 0, likes: 0, title, channelName });
+        res.destroy();
+      });
+      res.on("end", () => finish({ views: 0, likes: 0, title: "", channelName: "" }));
+    });
+    req.on("error", (error) => { if (!settled) reject(error); });
+    req.setTimeout(30000, () => { if (!settled) { req.destroy(); reject(new Error("YouTube response timed out")); } });
+  });
+}
+
+// Read the stream only until the player payload exposes its view count. YouTube
+// can keep the document open long after that data has arrived.
 async function fetchYouTubeStatsFromWatchPage(videoId) {
   const query = `watch?v=${videoId}&hl=en&gl=US&bpctr=9999999999&has_verified=1`;
   const urls = [`https://www.youtube.com/${query}`, `https://m.youtube.com/${query}`];
   let lastResult = { views: 0, likes: 0, title: "", channelName: "" };
   for (const url of urls) {
     try {
-      // YouTube may stream a large HTML response slowly. Give this public-page
-      // scrape enough time to reach the player JSON before declaring it zero.
-      const html = await httpsFetchText(url, {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: "https://www.youtube.com/",
-      }, 0, 30000);
-
-    const metadataViews = html.match(/<meta[^>]+itemprop=["']interactionCount["'][^>]+content=["']([\d,]+)["']/i)
-      || html.match(/<meta[^>]+content=["']([\d,]+)["'][^>]+itemprop=["']interactionCount["']/i);
-    const playerViews = html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
-    const views = parseInt((metadataViews?.[1] || playerViews?.[1] || "0").replace(/,/g, ""), 10) || 0;
-
-    const title = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1]
-      || html.match(/"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"')
-      || "";
-    const channelName = html.match(/<link[^>]+itemprop=["']name["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
-      lastResult = { views, likes: 0, title, channelName };
-      if (views > 0) return lastResult;
+      const result = await streamYouTubeWatchPage(url);
+      lastResult = result;
+      if (result.views > 0) return result;
     } catch {}
   }
   return lastResult;
