@@ -565,14 +565,12 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
       "assignedAgent.userId": agentId,
     })
       .sort({ resolvedAt: -1 })
-      .limit(30)
       .select("-messages -__v"),
     ClaimSession.find({
       status: "closed",
       "assignedAgent.userId": agentId,
     })
       .sort({ closedAt: -1 })
-      .limit(30)
       .select("-messages -__v"),
   ]);
 
