@@ -5,10 +5,20 @@ const Order = require("../models/Order");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
+function getAssignedGames(deliverer) {
+  const assignmentGames = (deliverer.assignments || []).map((a) => a.game).filter(Boolean);
+  return assignmentGames.length > 0 ? assignmentGames : (deliverer.games || []);
+}
+
+function getCommissionRateForGame(deliverer, game) {
+  const assignment = (deliverer.assignments || []).find((a) => a.game === game);
+  return assignment ? assignment.commissionRate : (deliverer.commissionRate ?? 20);
+}
+
 // GET /api/deliverer/claims — pending queue + my active sessions
 exports.getClaims = catchAsync(async (req, res) => {
   const delivererId = req.deliverer._id;
-  const delivererGames = req.deliverer.games || [];
+  const delivererGames = getAssignedGames(req.deliverer);
 
   // Filter pending queue by assigned games (same logic as claim agent queue)
   const pendingFilter = { status: "pending" };
@@ -139,7 +149,8 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
     } catch {}
   }
 
-  const commission = (orderTotal * (deliverer.commissionRate || 20)) / 100;
+  const commissionRate = getCommissionRateForGame(deliverer, session.game);
+  const commission = (orderTotal * commissionRate) / 100;
 
   // Auto-complete the linked order (same as claim:mark_claimed socket handler)
   if (session.orderRef) {
@@ -173,7 +184,7 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
     game: session.game || null,
     items: session.items || [],
     orderTotal,
-    commissionRate: deliverer.commissionRate || 20,
+    commissionRate,
     commission,
     deliveredAt: new Date(),
     ...(proofImageUrls.length > 0 && { proofImages: proofImageUrls }),
@@ -304,6 +315,7 @@ exports.getStats = catchAsync(async (req, res) => {
         name: deliverer.name,
         email: deliverer.email,
         commissionRate: deliverer.commissionRate,
+        assignments: deliverer.assignments || [],
         totalRevenue: deliverer.totalRevenue,
         totalCommission: deliverer.totalCommission,
         totalDelivered: deliverer.totalDelivered,
