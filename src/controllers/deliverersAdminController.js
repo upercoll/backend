@@ -39,7 +39,7 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
 });
 
 exports.inviteDeliverer = catchAsync(async (req, res, next) => {
-  const { email, name, commissionRate } = req.body;
+  const { email, name, commissionRate, assignments } = req.body;
   if (!email) return next(new AppError("Email is required", 400));
 
   const existing = await Deliverer.findOne({ email: email.toLowerCase() });
@@ -48,6 +48,7 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
   const rawToken = crypto.randomBytes(32).toString("hex");
   const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
 
+  const normalizedAssignments = normalizeAssignments(assignments, commissionRate ?? 20);
   const deliverer = await Deliverer.create({
     email: email.toLowerCase(),
     name: name || "",
@@ -55,6 +56,8 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
     inviteExpiry: new Date(Date.now() + 72 * 60 * 60 * 1000),
     status: "invited",
     commissionRate: commissionRate ?? 20,
+    assignments: normalizedAssignments,
+    games: normalizedAssignments.map((assignment) => assignment.game),
   });
 
   const inviteUrl = `${process.env.FRONTEND_URL}/deliverer/invite/${rawToken}`;
@@ -72,14 +75,39 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
   res.status(201).json({ success: true, data: { deliverer } });
 });
 
+function normalizeAssignments(assignments, fallbackRate) {
+  if (assignments === undefined) return [];
+  if (!Array.isArray(assignments)) throw new AppError("Assignments must be a list of games and commission rates", 400);
+
+  const seenGames = new Set();
+  return assignments.map((assignment) => {
+    const game = String(assignment?.game || "").trim();
+    const commissionRate = Number(assignment?.commissionRate);
+    if (!game) throw new AppError("Every assignment must include a game", 400);
+    if (seenGames.has(game)) throw new AppError("A game can only be assigned once", 400);
+    if (!Number.isFinite(commissionRate) || commissionRate < 0 || commissionRate > 100) {
+      throw new AppError("Each game commission rate must be between 0 and 100", 400);
+    }
+    seenGames.add(game);
+    return { game, commissionRate: assignment.commissionRate ?? fallbackRate };
+  });
+}
+
 exports.updateDeliverer = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const { name, status, commissionRate } = req.body;
+  const { name, status, commissionRate, assignments } = req.body;
   if (name !== undefined) deliverer.name = name;
   if (status) deliverer.status = status;
   if (commissionRate !== undefined) deliverer.commissionRate = commissionRate;
+  if (assignments !== undefined) {
+    const normalizedAssignments = normalizeAssignments(assignments, deliverer.commissionRate ?? 20);
+    deliverer.assignments = normalizedAssignments;
+    // Keep the legacy field synchronized because older delivery records and
+    // integrations still expect it.
+    deliverer.games = normalizedAssignments.map((assignment) => assignment.game);
+  }
 
   await deliverer.save();
   res.json({ success: true, data: { deliverer } });
