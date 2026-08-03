@@ -34,36 +34,6 @@ function httpsGet(url) {
   });
 }
 
-// POST JSON, return parsed JSON response
-function httpsPost(url, body, extraHeaders = {}) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const payload = JSON.stringify(body);
-    const options = {
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(payload),
-        ...extraHeaders,
-      },
-    };
-    const req = https.request(options, (res) => {
-      let raw = "";
-      res.on("data", (chunk) => (raw += chunk));
-      res.on("end", () => {
-        try { resolve(JSON.parse(raw)); }
-        catch { reject(new Error("Non-JSON response")); }
-      });
-    });
-    req.on("error", reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error("Request timed out")); });
-    req.write(payload);
-    req.end();
-  });
-}
-
 // Fetches raw HTML text, following up to 5 redirects
 function httpsFetchText(url, extraHeaders = {}, _hops = 0) {
   return new Promise((resolve, reject) => {
@@ -174,76 +144,30 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
-// YouTube's own public InnerTube key — embedded in their web player, stable for years.
-// Required for server-side InnerTube calls (no browser session/cookies to authenticate).
-const YT_INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-
-function parseInnerTubeResponse(data) {
-  const views = parseInt(data?.videoDetails?.viewCount || "0", 10);
-  const title = data?.videoDetails?.title || "";
-  const channelName = data?.videoDetails?.author || "";
-  return { views, title, channelName };
-}
-
-async function fetchYouTubeStatsInnerTube(videoId) {
-  const baseUrl = `https://www.youtube.com/youtubei/v1/player?key=${YT_INNERTUBE_KEY}&prettyPrint=false`;
-
-  // Strategy 1: ANDROID client — most reliable for view counts server-side
+// The player endpoint can be rejected by YouTube depending on the server IP.
+// The public watch page still exposes the view count in both structured metadata
+// and player JSON, so use it as a no-key fallback before returning zero views.
+async function fetchYouTubeStatsFromWatchPage(videoId) {
+  const url = `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US&bpctr=9999999999&has_verified=1`;
   try {
-    const data = await httpsPost(
-      baseUrl,
-      {
-        videoId,
-        context: {
-          client: {
-            clientName: "ANDROID",
-            clientVersion: "17.36.4",
-            androidSdkVersion: 30,
-            hl: "en",
-            timeZone: "UTC",
-            utcOffsetMinutes: 0,
-          },
-        },
-      },
-      {
-        "User-Agent": "com.google.android.youtube/17.36.4 (Linux; U; Android 11) gzip",
-        "X-YouTube-Client-Name": "3",
-        "X-YouTube-Client-Version": "17.36.4",
-        Origin: "https://www.youtube.com",
-      }
-    );
-    const parsed = parseInnerTubeResponse(data);
-    if (parsed.views > 0) return { ...parsed, likes: 0 };
-  } catch {}
+    const html = await httpsFetchText(url, {
+      "Accept-Language": "en-US,en;q=0.9",
+      Referer: "https://www.youtube.com/",
+    });
 
-  // Strategy 2: WEB client fallback
-  try {
-    const data = await httpsPost(
-      baseUrl,
-      {
-        videoId,
-        context: {
-          client: {
-            clientName: "WEB",
-            clientVersion: "2.20231121.08.00",
-            hl: "en",
-          },
-        },
-      },
-      {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-        "X-YouTube-Client-Name": "1",
-        "X-YouTube-Client-Version": "2.20231121.08.00",
-        Origin: "https://www.youtube.com",
-        Referer: `https://www.youtube.com/watch?v=${videoId}`,
-      }
-    );
-    const parsed = parseInnerTubeResponse(data);
-    return { ...parsed, likes: 0 };
-  } catch {}
+    const metadataViews = html.match(/<meta[^>]+itemprop=["']interactionCount["'][^>]+content=["']([\d,]+)["']/i)
+      || html.match(/<meta[^>]+content=["']([\d,]+)["'][^>]+itemprop=["']interactionCount["']/i);
+    const playerViews = html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
+    const views = parseInt((metadataViews?.[1] || playerViews?.[1] || "0").replace(/,/g, ""), 10) || 0;
 
-  return { views: 0, likes: 0, title: "", channelName: "" };
+    const title = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1]
+      || html.match(/"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"')
+      || "";
+    const channelName = html.match(/<link[^>]+itemprop=["']name["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
+    return { views, likes: 0, title, channelName };
+  } catch {
+    return { views: 0, likes: 0, title: "", channelName: "" };
+  }
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
@@ -287,32 +211,12 @@ async function fetchVideoInfo(platform, url) {
       channelName = oe.author_name || "";
     } catch {}
 
-    // Try YouTube Data API v3 first (best quality, requires key)
-    if (process.env.YOUTUBE_API_KEY) {
-      try {
-        const stats = await httpsGet(
-          `https://www.googleapis.com/youtube/v3/videos?id=${videoId}` +
-            `&key=${process.env.YOUTUBE_API_KEY}&part=statistics,snippet`
-        );
-        const item = stats.items?.[0];
-        if (item) {
-          views = parseInt(item.statistics?.viewCount || 0);
-          likes = parseInt(item.statistics?.likeCount || 0);
-          if (!title) title = item.snippet?.title || "";
-          if (!channelName) channelName = item.snippet?.channelTitle || "";
-        }
-      } catch {}
-    }
-
-    // Fallback: InnerTube API (no key needed, far more reliable than HTML scraping)
-    if (views === 0) {
-      try {
-        const inner = await fetchYouTubeStatsInnerTube(videoId);
-        if (inner.views > 0) views = inner.views;
-        if (!title && inner.title) title = inner.title;
-        if (!channelName && inner.channelName) channelName = inner.channelName;
-      } catch {}
-    }
+    // No YouTube API is used here. The count is scraped from the publicly
+    // rendered watch page; oEmbed above is only used for lightweight metadata.
+    const watchPage = await fetchYouTubeStatsFromWatchPage(videoId);
+    if (watchPage.views > 0) views = watchPage.views;
+    if (!title && watchPage.title) title = watchPage.title;
+    if (!channelName && watchPage.channelName) channelName = watchPage.channelName;
 
     return { videoId, platform: "youtube", title, thumbnail, channelName, views, likes };
   }
