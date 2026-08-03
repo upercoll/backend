@@ -1,6 +1,14 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
+const gameAssignmentSchema = new mongoose.Schema(
+  {
+    game: { type: String, required: true, trim: true },
+    commissionRate: { type: Number, required: true, min: 0, max: 100 },
+  },
+  { _id: false }
+);
+
 const delivererSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -22,8 +30,11 @@ const delivererSchema = new mongoose.Schema(
     lifetimeRevenue: { type: Number, default: 0 },
     lifetimeCommission: { type: Number, default: 0 },
     lastPayoutAt: { type: Date },
-    // Game slugs this deliverer is assigned to handle (empty = all games)
+    // Legacy game assignments and global rate are retained for existing members.
     games: { type: [String], default: [] },
+    // Each assigned game has its own commission rate. An empty list retains
+    // the legacy "all games" behavior for existing delivery team members.
+    assignments: { type: [gameAssignmentSchema], default: [] },
   },
   { timestamps: true }
 );
