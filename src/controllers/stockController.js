@@ -349,53 +349,26 @@ async function computeUnpaidDeliveries(stocker) {
     }
   }
 
-  if (stockedProductNames.size === 0) return { deliveries: [], unpaidAmount: 0, deliveryCount: 0 };
-
-  const ClaimSession = require("../models/ClaimSession");
-  const since = stocker.lastPayoutAt || stocker.createdAt;
-  const deliveredSessions = await ClaimSession.find({
-    status: { $in: ["claimed", "ended"] },
-    resolvedAt: { $gt: since },
-  })
-    .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef roomId")
-    .sort({ resolvedAt: -1 })
-    .lean();
-
-  const deliveries = [];
-  let unpaidAmount = 0;
-
-  for (const session of deliveredSessions) {
-    let sessionItems = [...(session.items || [])];
-    if (session.itemName && sessionItems.length === 0) {
-      sessionItems = [{ name: session.itemName, quantity: 1 }];
-    }
-    const matchedItems = sessionItems.filter(item => item.name && stockedProductNames.has(item.name.toLowerCase()));
-    if (matchedItems.length > 0) {
-      let sessionRevenue = 0;
-      const itemsWithPrice = matchedItems.map(item => {
-        const key = item.name?.toLowerCase();
-        const salePrice = stockedProductMap[key]?.salePrice || 0;
-        const qty = item.quantity || 1;
-        sessionRevenue += salePrice * qty;
-        return { ...item, salePrice };
-      });
-      const sessionCommission = sessionRevenue * (stocker.commissionRate / 100);
-      unpaidAmount += sessionCommission;
-      deliveries.push({
-        roomId: session.roomId,
-        robloxUsername: session.robloxUsername,
-        game: session.game,
-        orderRef: session.orderRef,
-        agentName: session.assignedAgent?.name || "Unknown",
-        deliveredAt: session.resolvedAt,
-        items: itemsWithPrice,
-        revenue: sessionRevenue,
-        commission: sessionCommission,
-      });
-    }
-  }
-
-  return { deliveries, unpaidAmount, deliveryCount: deliveries.length };
+  const deliveries = stockedRequests
+    .map((request) => {
+      const unpaidAmount = Math.max(0, (request.commission || 0) - (request.paidAmount || 0));
+      return {
+        requestId: String(request._id),
+        game: request.game,
+        deliveredAt: request.stockedAt,
+        items: request.items,
+        revenue: request.totalSaleValue || 0,
+        commission: request.commission || 0,
+        paidAmount: request.paidAmount || 0,
+        unpaidAmount,
+      };
+    })
+    .filter((delivery) => delivery.unpaidAmount > 0);
+  return {
+    deliveries,
+    unpaidAmount: Number(deliveries.reduce((sum, delivery) => sum + delivery.unpaidAmount, 0).toFixed(2)),
+    deliveryCount: deliveries.length,
+  };
 }
 
 exports.getStockerPayouts = catchAsync(async (req, res, next) => {
@@ -430,12 +403,26 @@ exports.markStockerPaid = catchAsync(async (req, res, next) => {
     return next(new AppError("No unpaid amount to mark as paid", 400));
   }
 
+  const requestedAmount = req.body?.amount === undefined ? unpaidData.unpaidAmount : Number(req.body.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > unpaidData.unpaidAmount + 0.001) {
+    return next(new AppError(`Enter an amount between $0.01 and $${unpaidData.unpaidAmount.toFixed(2)}`, 400));
+  }
+  let remaining = Number(requestedAmount.toFixed(2));
+  const allocations = [];
+  for (const delivery of [...unpaidData.deliveries].sort((a, b) => new Date(a.deliveredAt) - new Date(b.deliveredAt))) {
+    if (remaining <= 0) break;
+    const amount = Number(Math.min(delivery.unpaidAmount, remaining).toFixed(2));
+    if (!amount) continue;
+    await StockRequest.findByIdAndUpdate(delivery.requestId, { $inc: { paidAmount: amount } });
+    allocations.push({ request: delivery.requestId, amount });
+    remaining = Number((remaining - amount).toFixed(2));
+  }
   const periodStart = stocker.lastPayoutAt || stocker.createdAt;
   const periodEnd = new Date();
 
   const payout = await StockerPayout.create({
     stocker: stocker._id,
-    amount: unpaidData.unpaidAmount,
+    amount: requestedAmount,
     commissionRate: stocker.commissionRate,
     deliveryCount: unpaidData.deliveryCount,
     periodStart,
@@ -444,9 +431,9 @@ exports.markStockerPaid = catchAsync(async (req, res, next) => {
     markedPaidBy: req.panelUser?.email || "Admin",
     cryptoAddress: stocker.cryptoAddress || "",
     cryptoNetwork: stocker.cryptoNetwork || "",
+    allocations,
   });
 
-  stocker.lastPayoutAt = periodEnd;
   await stocker.save();
 
   res.json({ success: true, data: { payout } });
