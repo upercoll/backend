@@ -32,6 +32,7 @@ const stockRequestSchema = new mongoose.Schema(
     paymentSent: { type: Boolean, default: false },
     commission: { type: Number, default: 0 },
     commissionRate: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0, min: 0 },
     approvedAt: { type: Date },
     stockedAt: { type: Date },
     rejectedAt: { type: Date },
