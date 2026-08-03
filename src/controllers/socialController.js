@@ -2,6 +2,7 @@ const https = require("https");
 const Collaborator = require("../models/Collaborator");
 const SocialSubmission = require("../models/SocialSubmission");
 const SocialPayout = require("../models/SocialPayout");
+const FeaturedYouTuber = require("../models/FeaturedYouTuber");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { sendSocialInviteEmail } = require("../config/email");
@@ -383,6 +384,12 @@ exports.creatorSubmit = catchAsync(async (req, res, next) => {
 
   const info = await fetchVideoInfo(platform, url);
 
+  const creator = await Collaborator.findById(req.collabUser.id);
+  const rateType = creator?.socialRateType || "per_1k";
+  const rate = Number(creator?.socialRate || 0);
+  const offeredAmount = rateType === "per_1k"
+    ? Number(((info.views / 1000) * rate).toFixed(2))
+    : rate;
   const submission = await SocialSubmission.create({
     collaborator: req.collabUser.id,
     platform: info.platform,
@@ -393,7 +400,10 @@ exports.creatorSubmit = catchAsync(async (req, res, next) => {
     channelName: info.channelName,
     views: info.views,
     likes: info.likes,
-    status: "in_review",
+    status: "active",
+    rateType,
+    ratePerView: rateType === "per_1k" ? rate / 1000 : 0,
+    offeredAmount,
   });
 
   res.status(201).json({ success: true, data: { submission } });
@@ -418,15 +428,12 @@ exports.creatorGetStats = catchAsync(async (req, res) => {
     accepted: all.filter((s) => s.status === "accepted").length,
     paid: all.filter((s) => s.status === "paid").length,
     pendingPayout: parseFloat(
-      all
-        .filter((s) => s.status === "accepted")
-        .reduce((sum, s) => sum + (s.offeredAmount || 0), 0)
+      all.filter((s) => s.status !== "paid")
+        .reduce((sum, s) => sum + Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0)), 0)
         .toFixed(2)
     ),
     totalPaid: parseFloat(
-      all
-        .filter((s) => s.status === "paid")
-        .reduce((sum, s) => sum + (s.offeredAmount || 0), 0)
+      all.reduce((sum, s) => sum + (s.paidAmount || (s.status === "paid" ? s.offeredAmount || 0 : 0)), 0)
         .toFixed(2)
     ),
   };
@@ -457,6 +464,16 @@ exports.creatorAccept = catchAsync(async (req, res, next) => {
   await submission.save();
 
   res.json({ success: true, data: { submission } });
+});
+
+exports.creatorRequestPayout = catchAsync(async (req, res, next) => {
+  const creator = await Collaborator.findById(req.collabUser.id);
+  const outstanding = await SocialSubmission.find({ collaborator: creator._id, status: { $ne: "paid" } });
+  const balance = outstanding.reduce((sum, s) => sum + Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0)), 0);
+  if (balance <= 0) return next(new AppError("There is no available balance to request.", 400));
+  creator.payoutRequestedAt = new Date();
+  await creator.save();
+  res.json({ success: true, data: { requestedAt: creator.payoutRequestedAt, balance: Number(balance.toFixed(2)) } });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -503,13 +520,13 @@ exports.adminSetRate = catchAsync(async (req, res, next) => {
   let finalRatePerView = 0;
   let finalOfferedAmount = 0;
 
-  if (rateType === "per_view") {
-    finalRatePerView = parseFloat(ratePerView);
+  if (rateType === "per_1k" || rateType === "per_view") {
+    finalRatePerView = rateType === "per_1k" ? parseFloat(ratePerView) / 1000 : parseFloat(ratePerView);
     if (!finalRatePerView || finalRatePerView <= 0) {
       return next(new AppError("Rate per view must be greater than 0", 400));
     }
     finalOfferedAmount = parseFloat((finalRatePerView * (sub.views || 0)).toFixed(2));
-  } else if (rateType === "auto") {
+  } else if (rateType === "per_video" || rateType === "auto") {
     finalOfferedAmount = parseFloat(offeredAmount);
     if (!finalOfferedAmount || finalOfferedAmount <= 0) {
       return next(new AppError("Offered amount must be greater than 0", 400));
@@ -519,24 +536,20 @@ exports.adminSetRate = catchAsync(async (req, res, next) => {
         ? parseFloat((finalOfferedAmount / sub.views).toFixed(8))
         : 0;
   } else {
-    return next(new AppError("rateType must be 'per_view' or 'auto'", 400));
+    return next(new AppError("rateType must be 'per_1k' or 'per_video'", 400));
   }
 
-  sub.rateType = rateType;
+  sub.rateType = rateType === "per_view" ? "per_1k" : rateType === "auto" ? "per_video" : rateType;
   sub.ratePerView = finalRatePerView;
   sub.offeredAmount = finalOfferedAmount;
   if (adminNote !== undefined) sub.adminNote = adminNote;
-  sub.status = "reviewed";
-  sub.reviewedAt = new Date();
-  sub.reviewedBy = req.panelUser.email;
-
   await sub.save();
 
   res.json({ success: true, data: { submission: sub } });
 });
 
 exports.adminInviteCreator = catchAsync(async (req, res, next) => {
-  const { name, email } = req.body;
+  const { name, email, rateType = "per_1k", rate = 0, paymentMethods = [], requiresPaymentProof = false } = req.body;
   if (!name || !email) return next(new AppError("name and email are required", 400));
 
   const existing = await Collaborator.findOne({ email: email.toLowerCase().trim() });
@@ -548,6 +561,10 @@ exports.adminInviteCreator = catchAsync(async (req, res, next) => {
     isSocialCreator: true,
     invitedBy: req.panelUser.email,
     status: "invited",
+    socialRateType: rateType,
+    socialRate: Number(rate) || 0,
+    paymentMethods,
+    requiresPaymentProof,
   });
 
   const rawToken = creator.generateInviteToken();
@@ -564,6 +581,32 @@ exports.adminInviteCreator = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.adminUpdateCreator = catchAsync(async (req, res, next) => {
+  const creator = await Collaborator.findOne({ _id: req.params.collabId, isSocialCreator: true });
+  if (!creator) return next(new AppError("Creator not found", 404));
+  const { name, socialRateType, socialRate, paymentMethods, requiresPaymentProof } = req.body;
+  if (name !== undefined) creator.name = String(name).trim();
+  if (socialRateType !== undefined) creator.socialRateType = socialRateType;
+  if (socialRate !== undefined) creator.socialRate = Number(socialRate) || 0;
+  if (paymentMethods !== undefined) creator.paymentMethods = paymentMethods;
+  if (requiresPaymentProof !== undefined) creator.requiresPaymentProof = Boolean(requiresPaymentProof);
+  await creator.save();
+  // A changed agreement applies to currently tracking videos too, so balances
+  // never require a manual review/recalculation pass.
+  if (socialRateType !== undefined || socialRate !== undefined) {
+    const tracking = await SocialSubmission.find({ collaborator: creator._id, status: { $ne: "paid" } });
+    for (const sub of tracking) {
+      sub.rateType = creator.socialRateType;
+      sub.ratePerView = creator.socialRateType === "per_1k" ? creator.socialRate / 1000 : 0;
+      sub.offeredAmount = creator.socialRateType === "per_1k"
+        ? Number(((sub.views || 0) * creator.socialRate / 1000).toFixed(2))
+        : Number(creator.socialRate.toFixed(2));
+      await sub.save();
+    }
+  }
+  res.json({ success: true, data: { creator: creator.toSafeObject() } });
+});
+
 exports.adminListCreators = catchAsync(async (req, res) => {
   const collaborators = await Collaborator.find({ isSocialCreator: true, status: { $in: ["active", "invited"] } }).sort({ createdAt: -1 });
 
@@ -571,11 +614,10 @@ exports.adminListCreators = catchAsync(async (req, res) => {
     collaborators.map(async (c) => {
       const submissions = await SocialSubmission.find({ collaborator: c._id }).lean();
       const pendingPayout = submissions
-        .filter((s) => s.status === "accepted")
-        .reduce((sum, s) => sum + (s.offeredAmount || 0), 0);
+        .filter((s) => s.status !== "paid")
+        .reduce((sum, s) => sum + Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0)), 0);
       const totalPaid = submissions
-        .filter((s) => s.status === "paid")
-        .reduce((sum, s) => sum + (s.offeredAmount || 0), 0);
+        .reduce((sum, s) => sum + (s.paidAmount || (s.status === "paid" ? s.offeredAmount || 0 : 0)), 0);
       const lastPayout = await SocialPayout.findOne({ collaborator: c._id }).sort({
         createdAt: -1,
       });
@@ -587,6 +629,7 @@ exports.adminListCreators = catchAsync(async (req, res) => {
           inReview: submissions.filter((s) => s.status === "in_review").length,
           reviewed: submissions.filter((s) => s.status === "reviewed").length,
           accepted: submissions.filter((s) => s.status === "accepted").length,
+          active: submissions.filter((s) => s.status === "active").length,
           paid: submissions.filter((s) => s.status === "paid").length,
           pendingPayout: parseFloat(pendingPayout.toFixed(2)),
           totalPaid: parseFloat(totalPaid.toFixed(2)),
@@ -625,9 +668,9 @@ exports.adminGetCreator = catchAsync(async (req, res, next) => {
     SocialPayout.find({ collaborator: collab._id }).sort({ createdAt: -1 }),
   ]);
 
-  const acceptedSubs = submissions.filter((s) => s.status === "accepted");
+  const acceptedSubs = submissions.filter((s) => s.status !== "paid" && ((s.offeredAmount || 0) - (s.paidAmount || 0)) > 0);
   const pendingPayout = parseFloat(
-    acceptedSubs.reduce((sum, s) => sum + (s.offeredAmount || 0), 0).toFixed(2)
+    acceptedSubs.reduce((sum, s) => sum + Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0)), 0).toFixed(2)
   );
 
   res.json({
@@ -649,7 +692,7 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
   // Sort oldest first so partial payouts cover the earliest accepted submissions
   const acceptedSubs = await SocialSubmission.find({
     collaborator: collab._id,
-    status: "accepted",
+    status: { $ne: "paid" },
   }).sort({ acceptedAt: 1 });
 
   if (acceptedSubs.length === 0) {
@@ -657,64 +700,55 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
   }
 
   const totalOwed = parseFloat(
-    acceptedSubs.reduce((sum, s) => sum + (s.offeredAmount || 0), 0).toFixed(2)
+    acceptedSubs.reduce((sum, s) => sum + Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0)), 0).toFixed(2)
   );
 
   // Optional partial payout: only pay up to partialAmount
-  const { partialAmount } = req.body;
-  let subsToMark = acceptedSubs;
-  let payoutAmount = totalOwed;
+  const { partialAmount, paymentMethod, proofUrl } = req.body;
+  let payoutAmount = partialAmount == null ? totalOwed : Number(partialAmount);
 
   if (partialAmount != null) {
-    const partial = parseFloat(partialAmount);
-    if (isNaN(partial) || partial <= 0) {
+    if (isNaN(payoutAmount) || payoutAmount <= 0) {
       return next(new AppError("partialAmount must be a positive number", 400));
     }
-    if (partial > totalOwed) {
-      return next(new AppError(`Partial amount ($${partial}) exceeds total owed ($${totalOwed})`, 400));
+    if (payoutAmount > totalOwed) {
+      return next(new AppError(`Partial amount ($${payoutAmount}) exceeds total owed ($${totalOwed})`, 400));
     }
 
     // Select submissions from oldest until we hit the partial amount
-    subsToMark = [];
-    let running = 0;
-    for (const s of acceptedSubs) {
-      const amt = s.offeredAmount || 0;
-      if (running + amt > partial + 0.001) break; // stop before exceeding
-      subsToMark.push(s);
-      running = parseFloat((running + amt).toFixed(2));
-    }
-
-    if (subsToMark.length === 0) {
-      return next(new AppError("Partial amount is less than any single accepted submission's payout", 400));
-    }
-    payoutAmount = parseFloat(
-      subsToMark.reduce((sum, s) => sum + (s.offeredAmount || 0), 0).toFixed(2)
-    );
+  }
+  let left = Number(payoutAmount.toFixed(2));
+  const allocations = [];
+  for (const s of acceptedSubs) {
+    if (left <= 0) break;
+    const owing = Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0));
+    const amount = Number(Math.min(owing, left).toFixed(2));
+    if (amount) { allocations.push({ submission: s._id, amount }); left = Number((left - amount).toFixed(2)); }
   }
 
   const payout = await SocialPayout.create({
     collaborator: collab._id,
     amount: payoutAmount,
-    submissionCount: subsToMark.length,
-    submissionIds: subsToMark.map((s) => s._id),
+    submissionCount: allocations.length,
+    submissionIds: allocations.map((s) => s.submission), allocations,
+    paymentMethod: paymentMethod || "", proofUrl: proofUrl || "",
     periodEnd: new Date(),
     paidAt: new Date(),
     paidBy: req.panelUser.email,
   });
 
-  await SocialSubmission.updateMany(
-    { _id: { $in: subsToMark.map((s) => s._id) } },
-    {
-      status: "paid",
-      paidAt: new Date(),
-      paidBy: req.panelUser.email,
-      paidInPayoutId: payout._id,
-    }
-  );
+  for (const allocation of allocations) {
+    const sub = acceptedSubs.find(s => String(s._id) === String(allocation.submission));
+    sub.paidAmount = Number(((sub.paidAmount || 0) + allocation.amount).toFixed(2));
+    if (sub.paidAmount + 0.001 >= (sub.offeredAmount || 0)) { sub.status = "paid"; sub.paidAt = new Date(); sub.paidBy = req.panelUser.email; sub.paidInPayoutId = payout._id; }
+    await sub.save();
+  }
+  collab.payoutRequestedAt = null;
+  await collab.save();
 
   res.json({
     success: true,
-    data: { payout, count: subsToMark.length, totalAmount: payoutAmount },
+    data: { payout, count: allocations.length, totalAmount: payoutAmount },
   });
 });
 
@@ -743,11 +777,40 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
   sub.likes = updatedLikes;
 
   // If the rate was set per_view, recalculate the offered amount
-  if (sub.rateType === "per_view" && sub.ratePerView && sub.status !== "accepted") {
+  if ((sub.rateType === "per_view" || sub.rateType === "per_1k") && sub.ratePerView && sub.status !== "paid") {
     sub.offeredAmount = parseFloat((sub.ratePerView * updatedViews).toFixed(2));
   }
 
   await sub.save();
 
   res.json({ success: true, data: { submission: sub } });
+});
+
+async function fetchFeaturedYouTuber(username) {
+  const clean = username.replace(/^@/, "").trim();
+  const channelUrl = `https://www.youtube.com/@${clean}`;
+  const html = await httpsFetchText(channelUrl);
+  const title = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1] || clean;
+  const avatarUrl = html.match(/<meta property="og:image" content="([^"]+)"/)?.[1] || "";
+  const subscriberText = html.match(/([\d.,]+[KMB]?)\s+subscribers/i)?.[1] || "0";
+  const factor = /B$/i.test(subscriberText) ? 1e9 : /M$/i.test(subscriberText) ? 1e6 : /K$/i.test(subscriberText) ? 1e3 : 1;
+  return { username: clean, name: title.replace(/ - YouTube$/i, ""), subscribers: Math.round(parseFloat(subscriberText.replace(/[KMB,]/gi, "")) * factor) || 0, avatarUrl, channelUrl };
+}
+exports.publicFeaturedYouTubers = catchAsync(async (req, res) => {
+  const creators = await FeaturedYouTuber.find({ active: true }).sort({ createdAt: -1 }).lean();
+  res.json({ success: true, data: { creators } });
+});
+exports.adminFeaturedYouTubers = catchAsync(async (req, res) => {
+  res.json({ success: true, data: { creators: await FeaturedYouTuber.find().sort({ createdAt: -1 }) } });
+});
+exports.adminAddFeaturedYouTuber = catchAsync(async (req, res, next) => {
+  if (!req.body.username) return next(new AppError("A YouTube username is required", 400));
+  let data; try { data = await fetchFeaturedYouTuber(req.body.username); } catch { data = { username: req.body.username.replace(/^@/, "").trim(), name: req.body.username.replace(/^@/, "").trim(), channelUrl: `https://www.youtube.com/@${req.body.username.replace(/^@/, "").trim()}` }; }
+  const creator = await FeaturedYouTuber.findOneAndUpdate({ username: data.username }, data, { upsert: true, new: true, setDefaultsOnInsert: true });
+  res.status(201).json({ success: true, data: { creator } });
+});
+exports.adminDeleteFeaturedYouTuber = catchAsync(async (req, res, next) => {
+  const creator = await FeaturedYouTuber.findByIdAndDelete(req.params.id);
+  if (!creator) return next(new AppError("YouTuber not found", 404));
+  res.json({ success: true });
 });
