@@ -22,14 +22,19 @@ async function getUnpaidSales(collaborator) {
   const productIds = collabProducts.map(cp => cp.product);
 
   const paidStatuses = ["paid", "delivering", "completed", "partially_refunded"];
-  const sinceDate = collaborator.lastPayoutAt || new Date(0);
-
   const orders = await Order.find({
     status: { $in: paidStatuses },
     "payment.status": "succeeded",
     "items.product": { $in: productIds },
-    createdAt: { $gt: sinceDate },
   });
+  const payouts = await CollaboratorPayout.find({ collaborator: collaborator._id, status: "paid" }).select("allocations");
+  const paidBySale = new Map();
+  for (const payout of payouts) {
+    for (const allocation of payout.allocations || []) {
+      const key = `${allocation.orderId}:${allocation.productId}`;
+      paidBySale.set(key, (paidBySale.get(key) || 0) + (allocation.amount || 0));
+    }
+  }
 
   const sales = [];
   let total = 0;
@@ -44,7 +49,10 @@ async function getUnpaidSales(collaborator) {
       if (!cp) continue;
       const salePrice = parseFloat((item.totalPrice * discountRatio).toFixed(2));
       const earnings = parseFloat((salePrice * (cp.cut / 100)).toFixed(2));
-      total += earnings;
+       const paidAmount = paidBySale.get(`${order._id}:${item.product}`) || 0;
+       const remainingAmount = Math.max(0, Number((earnings - paidAmount).toFixed(2)));
+       if (remainingAmount <= 0) continue;
+       total += remainingAmount;
       sales.push({
         orderId: String(order._id),
         orderNumber: order.orderNumber,
@@ -58,6 +66,8 @@ async function getUnpaidSales(collaborator) {
         orderTotal: salePrice,
         cut: cp.cut,
         earnings,
+         paidAmount,
+         remainingAmount,
       });
     }
   }
@@ -246,22 +256,33 @@ exports.markPayoutPaid = catchAsync(async (req, res, next) => {
     return next(new AppError("No unpaid sales found for this collaborator", 400));
   }
 
+  const requestedAmount = req.body?.amount === undefined ? total : Number(req.body.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > total + 0.001) {
+    return next(new AppError(`Enter an amount between $0.01 and $${total.toFixed(2)}`, 400));
+  }
+  let remaining = Number(requestedAmount.toFixed(2));
+  const allocations = [];
+  for (const sale of sales) {
+    if (remaining <= 0) break;
+    const amount = Number(Math.min(sale.remainingAmount, remaining).toFixed(2));
+    if (!amount) continue;
+    allocations.push({ orderId: sale.orderId, productId: sale.productId, amount });
+    remaining = Number((remaining - amount).toFixed(2));
+  }
   const now = new Date();
   const payout = await CollaboratorPayout.create({
     collaborator: collab._id,
     status: "paid",
-    amount: total,
+    amount: requestedAmount,
     periodStart: collab.lastPayoutAt || new Date(0),
     periodEnd: now,
     paidAt: now,
     paidBy: req.panelUser?.email || "Admin",
-    sales,
+    sales: sales.map((sale) => ({ ...sale, earnings: sale.remainingAmount })),
+    allocations,
   });
 
-  collab.lastPayoutAt = now;
-  await collab.save({ validateBeforeSave: false });
-
-  res.json({ success: true, data: { payout }, message: `Payout of $${total.toFixed(2)} marked as paid` });
+  res.json({ success: true, data: { payout }, message: `Payout of $${requestedAmount.toFixed(2)} marked as paid` });
 });
 
 exports.getAvailableProducts = catchAsync(async (req, res, next) => {
