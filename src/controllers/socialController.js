@@ -882,6 +882,24 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
 
 async function fetchFeaturedYouTuber(username) {
   const clean = username.replace(/^@/, "").trim();
+  if (process.env.YOUTUBE_API_KEY) {
+    try {
+      const data = await httpsGet(
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&forHandle=${encodeURIComponent(clean)}&key=${encodeURIComponent(process.env.YOUTUBE_API_KEY)}`
+      );
+      const channel = data?.items?.[0];
+      if (channel) {
+        return {
+          username: clean,
+          name: channel.snippet?.title || clean,
+          subscribers: parseInt(channel.statistics?.subscriberCount || 0, 10),
+          avatarUrl: channel.snippet?.thumbnails?.medium?.url || channel.snippet?.thumbnails?.default?.url || "",
+          channelUrl: `https://www.youtube.com/channel/${channel.id}`,
+          channelId: channel.id,
+        };
+      }
+    } catch {}
+  }
   const channelUrl = `https://www.youtube.com/@${clean}`;
   const html = await httpsFetchText(channelUrl);
   const title = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1] || clean;
