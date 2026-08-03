@@ -144,6 +144,69 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
+function findFirstNumber(value, key) {
+  if (!value || typeof value !== "object") return 0;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findFirstNumber(item, key);
+      if (found > 0) return found;
+    }
+    return 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, key)) {
+    const found = parseInt(value[key], 10);
+    if (found > 0) return found;
+  }
+  for (const child of Object.values(value)) {
+    const found = findFirstNumber(child, key);
+    if (found > 0) return found;
+  }
+  return 0;
+}
+
+function parseCompactCount(value) {
+  if (!value) return 0;
+  const match = String(value).replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
+  if (!match) return 0;
+  const multiplier = { K: 1e3, M: 1e6, B: 1e9 }[(match[2] || "").toUpperCase()] || 1;
+  return Math.round(parseFloat(match[1]) * multiplier) || 0;
+}
+
+function extractYouTubeLikes(html) {
+  const patterns = [
+    /"likeCount"\s*:\s*"?(\d+)"?/,
+    /"accessibilityData"\s*:\s*\{\s*"label"\s*:\s*"([^"]*?\blikes?\b[^"]*)"/i,
+    /"label"\s*:\s*"([^"]*?\blikes?\b[^"]*)"/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) {
+      const likes = parseCompactCount(match[1]);
+      if (likes > 0) return likes;
+    }
+  }
+  return 0;
+}
+
+async function fetchYouTubeDataApiStats(videoId) {
+  if (!process.env.YOUTUBE_API_KEY) return null;
+  try {
+    const data = await httpsGet(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${encodeURIComponent(videoId)}&key=${encodeURIComponent(process.env.YOUTUBE_API_KEY)}`
+    );
+    const video = data?.items?.[0];
+    if (!video) return null;
+    return {
+      views: parseInt(video.statistics?.viewCount || 0, 10),
+      likes: parseInt(video.statistics?.likeCount || 0, 10),
+      title: video.snippet?.title || "",
+      channelName: video.snippet?.channelTitle || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function fetchInnerTubeStats(videoId) {
   return new Promise((resolve) => {
     const postData = JSON.stringify({
@@ -177,17 +240,18 @@ function fetchInnerTubeStats(videoId) {
             const views = parseInt(details.viewCount || 0, 10);
             const title = details.title || "";
             const channelName = details.author || "";
-            resolve({ views, title, channelName });
+            const likes = findFirstNumber(json, "likeCount");
+            resolve({ views, likes, title, channelName });
           } catch {
-            resolve({ views: 0, title: "", channelName: "" });
+            resolve({ views: 0, likes: 0, title: "", channelName: "" });
           }
         });
       }
     );
-    req.on("error", () => resolve({ views: 0, title: "", channelName: "" }));
+    req.on("error", () => resolve({ views: 0, likes: 0, title: "", channelName: "" }));
     req.setTimeout(8000, () => {
       req.destroy();
-      resolve({ views: 0, title: "", channelName: "" });
+      resolve({ views: 0, likes: 0, title: "", channelName: "" });
     });
     req.write(postData);
     req.end();
@@ -196,21 +260,30 @@ function fetchInnerTubeStats(videoId) {
 
 async function fetchYouTubeStats(videoId) {
   let views = 0;
+  let likes = 0;
   let title = "";
   let channelName = "";
 
-  // Strategy 1: InnerTube API (Fastest & most reliable)
+  // Strategy 1: Official Data API. This is the reliable production path when
+  // a server-side key is configured; it is not affected by YouTube's scraper checks.
+  const officialStats = await fetchYouTubeDataApiStats(videoId);
+  if (officialStats && (officialStats.views > 0 || officialStats.likes > 0)) {
+    return officialStats;
+  }
+
+  // Strategy 2: InnerTube API (no-key fallback)
   try {
     const it = await fetchInnerTubeStats(videoId);
     if (it.views > 0) {
       views = it.views;
+      likes = it.likes;
       if (it.title) title = it.title;
       if (it.channelName) channelName = it.channelName;
-      return { views, title, channelName };
+      return { views, likes, title, channelName };
     }
   } catch {}
 
-  // Strategy 2: Scrape YouTube watch page HTML with consent cookie
+  // Strategy 3: Scrape YouTube watch page HTML with consent cookie
   const extraHeaders = {
     Cookie: "SOCS=CAESEwgDEgk2ODE3ODk1OTAaAmVuIAEaBgiA_L22Bg; CONSENT=YES+1",
     Referer: "https://www.youtube.com/",
@@ -222,6 +295,7 @@ async function fetchYouTubeStats(videoId) {
       html.match(/"viewCount"\s*:\s*"(\d+)"/) ||
       html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
     if (viewMatch) views = parseInt(viewMatch[1], 10) || 0;
+    likes = extractYouTubeLikes(html);
     if (!title) {
       title =
         html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
@@ -230,10 +304,10 @@ async function fetchYouTubeStats(videoId) {
       channelName =
         html.match(/"ownerChannelName"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') || "";
     }
-    if (views > 0) return { views, title, channelName };
+    if (views > 0 || likes > 0) return { views, likes, title, channelName };
   } catch {}
 
-  // Strategy 3: Scrape YouTube Shorts page HTML
+  // Strategy 4: Scrape YouTube Shorts page HTML
   try {
     const shortsUrl = `https://www.youtube.com/shorts/${videoId}?hl=en&gl=US`;
     const html = await httpsFetchText(shortsUrl, extraHeaders, 0, 8000);
@@ -241,6 +315,7 @@ async function fetchYouTubeStats(videoId) {
       html.match(/"viewCount"\s*:\s*"(\d+)"/) ||
       html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
     if (viewMatch) views = parseInt(viewMatch[1], 10) || 0;
+    likes = extractYouTubeLikes(html);
     if (!title) {
       title =
         html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
@@ -251,7 +326,7 @@ async function fetchYouTubeStats(videoId) {
     }
   } catch {}
 
-  return { views, title, channelName };
+  return { views, likes, title, channelName };
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
@@ -309,6 +384,7 @@ async function fetchVideoInfo(platform, url) {
 
     const ytStats = await fetchYouTubeStats(videoId);
     if (ytStats.views > 0) views = ytStats.views;
+    if (ytStats.likes > 0) likes = ytStats.likes;
     if (!title && ytStats.title) title = ytStats.title;
     if (!channelName && ytStats.channelName) channelName = ytStats.channelName;
 
@@ -759,11 +835,15 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
 
   let updatedViews = sub.views;
   let updatedLikes = sub.likes;
+  const previousViews = sub.views;
+  const previousLikes = sub.likes;
 
   try {
     const info = await fetchVideoInfo(sub.platform, sub.url);
-    updatedViews = info.views;
-    updatedLikes = info.likes;
+    // A provider can temporarily block an unauthenticated fallback request.
+    // Never erase previously saved analytics with an empty response.
+    if (info.views > 0) updatedViews = info.views;
+    if (info.likes > 0) updatedLikes = info.likes;
     if (info.title) sub.title = info.title;
     if (info.thumbnail) sub.thumbnail = info.thumbnail;
     if (info.channelName) sub.channelName = info.channelName;
@@ -791,7 +871,13 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
 
   await sub.save();
 
-  res.json({ success: true, data: { submission: sub } });
+  res.json({
+    success: true,
+    data: {
+      submission: sub,
+      refreshed: updatedViews !== previousViews || updatedLikes !== previousLikes,
+    },
+  });
 });
 
 async function fetchFeaturedYouTuber(username) {
