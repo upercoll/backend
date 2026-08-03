@@ -144,68 +144,135 @@ async function scrapeTikTokStats(url, videoId) {
   return { views: 0, likes: 0 };
 }
 
-function streamYouTubeWatchPage(url, _hops = 0) {
-  return new Promise((resolve, reject) => {
-    if (_hops > 5) return reject(new Error("Too many YouTube redirects"));
-    const parsed = new URL(url);
-    let settled = false;
-    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
-    const req = https.get({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: "https://www.youtube.com/",
+function fetchInnerTubeStats(videoId) {
+  return new Promise((resolve) => {
+    const postData = JSON.stringify({
+      videoId: videoId,
+      context: {
+        client: {
+          clientName: "WEB",
+          clientVersion: "2.20240501.00.00",
+        },
       },
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const next = res.headers.location.startsWith("http") ? res.headers.location : `https://${parsed.hostname}${res.headers.location}`;
-        res.resume();
-        return streamYouTubeWatchPage(next, _hops + 1).then(finish).catch(reject);
-      }
-      let raw = "";
-      res.on("data", (chunk) => {
-        if (settled) return;
-        raw += chunk.toString();
-        const viewMatch = raw.match(/"viewCount"\s*:\s*"?(\d+)"?/);
-        if (!viewMatch) return;
-        const title = raw.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
-        const channelName = raw.match(/"ownerChannelName"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') || "";
-        finish({ views: parseInt(viewMatch[1], 10) || 0, likes: 0, title, channelName });
-        res.destroy();
-      });
-      res.on("end", () => finish({ views: 0, likes: 0, title: "", channelName: "" }));
     });
-    req.on("error", (error) => { if (!settled) reject(error); });
-    req.setTimeout(30000, () => { if (!settled) { req.destroy(); reject(new Error("YouTube response timed out")); } });
+    const req = https.request(
+      {
+        hostname: "www.youtube.com",
+        path: "/youtubei/v1/player",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(raw);
+            const details = json?.videoDetails || {};
+            const views = parseInt(details.viewCount || 0, 10);
+            const title = details.title || "";
+            const channelName = details.author || "";
+            resolve({ views, title, channelName });
+          } catch {
+            resolve({ views: 0, title: "", channelName: "" });
+          }
+        });
+      }
+    );
+    req.on("error", () => resolve({ views: 0, title: "", channelName: "" }));
+    req.setTimeout(8000, () => {
+      req.destroy();
+      resolve({ views: 0, title: "", channelName: "" });
+    });
+    req.write(postData);
+    req.end();
   });
 }
 
-// Read the stream only until the player payload exposes its view count. YouTube
-// can keep the document open long after that data has arrived.
-async function fetchYouTubeStatsFromWatchPage(videoId) {
-  const query = `watch?v=${videoId}&hl=en&gl=US&bpctr=9999999999&has_verified=1`;
-  const urls = [`https://www.youtube.com/${query}`, `https://m.youtube.com/${query}`];
-  let lastResult = { views: 0, likes: 0, title: "", channelName: "" };
-  for (const url of urls) {
-    try {
-      const result = await streamYouTubeWatchPage(url);
-      lastResult = result;
-      if (result.views > 0) return result;
-    } catch {}
-  }
-  return lastResult;
+async function fetchYouTubeStats(videoId) {
+  let views = 0;
+  let title = "";
+  let channelName = "";
+
+  // Strategy 1: InnerTube API (Fastest & most reliable)
+  try {
+    const it = await fetchInnerTubeStats(videoId);
+    if (it.views > 0) {
+      views = it.views;
+      if (it.title) title = it.title;
+      if (it.channelName) channelName = it.channelName;
+      return { views, title, channelName };
+    }
+  } catch {}
+
+  // Strategy 2: Scrape YouTube watch page HTML with consent cookie
+  const extraHeaders = {
+    Cookie: "SOCS=CAESEwgDEgk2ODE3ODk1OTAaAmVuIAEaBgiA_L22Bg; CONSENT=YES+1",
+    Referer: "https://www.youtube.com/",
+  };
+  try {
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US`;
+    const html = await httpsFetchText(watchUrl, extraHeaders, 0, 8000);
+    const viewMatch =
+      html.match(/"viewCount"\s*:\s*"(\d+)"/) ||
+      html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
+    if (viewMatch) views = parseInt(viewMatch[1], 10) || 0;
+    if (!title) {
+      title =
+        html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
+    }
+    if (!channelName) {
+      channelName =
+        html.match(/"ownerChannelName"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') || "";
+    }
+    if (views > 0) return { views, title, channelName };
+  } catch {}
+
+  // Strategy 3: Scrape YouTube Shorts page HTML
+  try {
+    const shortsUrl = `https://www.youtube.com/shorts/${videoId}?hl=en&gl=US`;
+    const html = await httpsFetchText(shortsUrl, extraHeaders, 0, 8000);
+    const viewMatch =
+      html.match(/"viewCount"\s*:\s*"(\d+)"/) ||
+      html.match(/"viewCount"\s*:\s*"?(\d+)"?/);
+    if (viewMatch) views = parseInt(viewMatch[1], 10) || 0;
+    if (!title) {
+      title =
+        html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] || "";
+    }
+    if (!channelName) {
+      channelName =
+        html.match(/"ownerChannelName"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/)?.[1]?.replace(/\\"/g, '"') || "";
+    }
+  } catch {}
+
+  return { views, title, channelName };
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
 
 function extractYouTubeId(url) {
+  if (!url) return null;
   const match = url.match(
-    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+    /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
   );
-  return match?.[1] || null;
+  if (match?.[1]) return match[1];
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("v")) {
+      const v = parsed.searchParams.get("v");
+      if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+    }
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    const lastPart = pathParts[pathParts.length - 1];
+    if (lastPart && /^[A-Za-z0-9_-]{11}$/.test(lastPart)) return lastPart;
+  } catch {}
+  return null;
 }
 
 function extractTikTokId(url) {
@@ -240,12 +307,10 @@ async function fetchVideoInfo(platform, url) {
       channelName = oe.author_name || "";
     } catch {}
 
-    // No YouTube API is used here. The count is scraped from the publicly
-    // rendered watch page; oEmbed above is only used for lightweight metadata.
-    const watchPage = await fetchYouTubeStatsFromWatchPage(videoId);
-    if (watchPage.views > 0) views = watchPage.views;
-    if (!title && watchPage.title) title = watchPage.title;
-    if (!channelName && watchPage.channelName) channelName = watchPage.channelName;
+    const ytStats = await fetchYouTubeStats(videoId);
+    if (ytStats.views > 0) views = ytStats.views;
+    if (!title && ytStats.title) title = ytStats.title;
+    if (!channelName && ytStats.channelName) channelName = ytStats.channelName;
 
     return { videoId, platform: "youtube", title, thumbnail, channelName, views, likes };
   }
@@ -699,9 +764,9 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
     const info = await fetchVideoInfo(sub.platform, sub.url);
     updatedViews = info.views;
     updatedLikes = info.likes;
-    if (!sub.title && info.title) sub.title = info.title;
-    if (!sub.thumbnail && info.thumbnail) sub.thumbnail = info.thumbnail;
-    if (!sub.channelName && info.channelName) sub.channelName = info.channelName;
+    if (info.title) sub.title = info.title;
+    if (info.thumbnail) sub.thumbnail = info.thumbnail;
+    if (info.channelName) sub.channelName = info.channelName;
   } catch (e) {
     return next(new AppError(`Could not refresh views: ${e.message}`, 502));
   }
@@ -709,9 +774,19 @@ exports.adminRefreshViews = catchAsync(async (req, res, next) => {
   sub.views = updatedViews;
   sub.likes = updatedLikes;
 
-  // If the rate was set per_view, recalculate the offered amount
-  if ((sub.rateType === "per_view" || sub.rateType === "per_1k") && sub.ratePerView && sub.status !== "paid") {
-    sub.offeredAmount = parseFloat((sub.ratePerView * updatedViews).toFixed(2));
+  // If the rate was set per_view or per_1k, recalculate the offered amount
+  if ((sub.rateType === "per_view" || sub.rateType === "per_1k") && sub.status !== "paid") {
+    let ratePerView = sub.ratePerView;
+    if (!ratePerView && sub.rateType === "per_1k") {
+      const creator = await Collaborator.findById(sub.collaborator);
+      if (creator?.socialRate) {
+        ratePerView = creator.socialRate / 1000;
+        sub.ratePerView = ratePerView;
+      }
+    }
+    if (ratePerView) {
+      sub.offeredAmount = parseFloat((ratePerView * updatedViews).toFixed(2));
+    }
   }
 
   await sub.save();
