@@ -151,11 +151,15 @@ const socialCtrl = require("../controllers/socialController");
 router.get("/socials",                                  requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminList);
 router.get("/socials/creators",                         requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminListCreators);
 router.post("/socials/creators/invite",                 requirePermission("manage_socials"),                  socialCtrl.adminInviteCreator);
+router.patch("/socials/creators/:collabId",             requirePermission("manage_socials"),                  socialCtrl.adminUpdateCreator);
 router.post("/socials/creators/:collabId/mark-paid",    requirePermission("manage_socials"),                  socialCtrl.adminMarkPaid);
 router.delete("/socials/creators/:collabId",            requirePermission("manage_socials"),                  socialCtrl.adminDeleteCreator);
 router.get("/socials/creators/:collabId",               requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetCreator);
 router.patch("/socials/:id/rate",                       requirePermission("manage_socials"),                  socialCtrl.adminSetRate);
 router.post("/socials/:id/refresh-views",               requirePermission("manage_socials"),                  socialCtrl.adminRefreshViews);
+router.get("/socials/youtubers/featured",               requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminFeaturedYouTubers);
+router.post("/socials/youtubers/featured",              requirePermission("manage_socials"),                  socialCtrl.adminAddFeaturedYouTuber);
+router.delete("/socials/youtubers/featured/:id",        requirePermission("manage_socials"),                  socialCtrl.adminDeleteFeaturedYouTuber);
 router.get("/socials/:id",                              requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminGetOne);
 
 const claimCtrl = require("../controllers/claimController");
