@@ -24,6 +24,7 @@ const gamesRoutes = require("./routes/games");
 const collaboratorRoutes = require("./routes/collaborator");
 const stockerPanelRoutes = require("./routes/stockerPanel");
 const delivererPanelRoutes = require("./routes/delivererPanel");
+const socialsRoutes = require("./routes/socials");
 
 const app = express();
 
@@ -78,6 +79,7 @@ app.use("/api/games", gamesRoutes);
 app.use("/api/collab", collaboratorRoutes);
 app.use("/api/stocker", stockerPanelRoutes);
 app.use("/api/deliverer", delivererPanelRoutes);
+app.use("/api/socials", socialsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
