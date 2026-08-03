@@ -113,29 +113,39 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: { deliverer } });
 });
 
-// Mark all unpaid deliveries as paid — resets tracking totals
 exports.markPaid = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const paidRevenue = deliverer.totalRevenue;
-  const paidCommission = deliverer.totalCommission;
+  const records = await DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false }).sort({ deliveredAt: 1 });
+  const owed = records.reduce((sum, record) => sum + Math.max(0, (record.commission || 0) - (record.paidAmount || 0)), 0);
+  const requestedAmount = req.body?.amount === undefined ? owed : Number(req.body.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > owed + 0.001) {
+    return next(new AppError(`Enter an amount between $0.01 and $${owed.toFixed(2)}`, 400));
+  }
 
-  // Mark all unpaid records as paid
-  await DeliveryRecord.updateMany(
-    { deliverer: deliverer._id, paidOut: false },
-    { $set: { paidOut: true } }
-  );
+  let remaining = Number(requestedAmount.toFixed(2));
+  let paidRevenue = 0;
+  for (const record of records) {
+    if (remaining <= 0) break;
+    const due = Math.max(0, (record.commission || 0) - (record.paidAmount || 0));
+    const allocation = Number(Math.min(due, remaining).toFixed(2));
+    if (!allocation) continue;
+    record.paidAmount = Number(((record.paidAmount || 0) + allocation).toFixed(2));
+    if (record.paidAmount + 0.001 >= (record.commission || 0)) record.paidOut = true;
+    paidRevenue += (record.orderTotal || 0) * (allocation / (record.commission || 1));
+    remaining = Number((remaining - allocation).toFixed(2));
+    await record.save();
+  }
 
-  // Reset unpaid tracking totals
-  deliverer.totalRevenue = 0;
-  deliverer.totalCommission = 0;
+  deliverer.totalCommission = Number(Math.max(0, owed - requestedAmount).toFixed(2));
+  deliverer.totalRevenue = Math.max(0, deliverer.totalRevenue - paidRevenue);
   deliverer.lastPayoutAt = new Date();
   await deliverer.save();
 
   res.json({
     success: true,
-    data: { paidRevenue, paidCommission, lastPayoutAt: deliverer.lastPayoutAt },
+    data: { paidRevenue: Number(paidRevenue.toFixed(2)), paidCommission: requestedAmount, lastPayoutAt: deliverer.lastPayoutAt },
   });
 });
 
