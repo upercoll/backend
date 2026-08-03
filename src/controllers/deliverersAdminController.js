@@ -39,7 +39,7 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
 });
 
 exports.inviteDeliverer = catchAsync(async (req, res, next) => {
-  const { email, name, commissionRate, assignments } = req.body;
+  const { email, name, commissionRate, assignments, games } = req.body;
   if (!email) return next(new AppError("Email is required", 400));
 
   const existing = await Deliverer.findOne({ email: email.toLowerCase() });
@@ -48,7 +48,10 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
   const rawToken = crypto.randomBytes(32).toString("hex");
   const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
 
-  const normalizedAssignments = normalizeAssignments(assignments, commissionRate ?? 20);
+  const assignmentInput = assignments !== undefined
+    ? assignments
+    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: commissionRate ?? 20 })) : undefined);
+  const normalizedAssignments = normalizeAssignments(assignmentInput, commissionRate ?? 20);
   const deliverer = await Deliverer.create({
     email: email.toLowerCase(),
     name: name || "",
@@ -97,12 +100,15 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const { name, status, commissionRate, assignments } = req.body;
+  const { name, status, commissionRate, assignments, games } = req.body;
   if (name !== undefined) deliverer.name = name;
   if (status) deliverer.status = status;
   if (commissionRate !== undefined) deliverer.commissionRate = commissionRate;
-  if (assignments !== undefined) {
-    const normalizedAssignments = normalizeAssignments(assignments, deliverer.commissionRate ?? 20);
+  const assignmentInput = assignments !== undefined
+    ? assignments
+    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: deliverer.commissionRate ?? 20 })) : undefined);
+  if (assignmentInput !== undefined) {
+    const normalizedAssignments = normalizeAssignments(assignmentInput, deliverer.commissionRate ?? 20);
     deliverer.assignments = normalizedAssignments;
     // Keep the legacy field synchronized because older delivery records and
     // integrations still expect it.
