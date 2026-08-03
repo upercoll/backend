@@ -11,6 +11,7 @@ const deliveryRecordSchema = new mongoose.Schema(
     orderTotal: { type: Number, default: 0 },    // order.pricing.total
     commissionRate: { type: Number, required: true },
     commission: { type: Number, required: true }, // orderTotal * commissionRate / 100
+    paidAmount: { type: Number, default: 0, min: 0 },
     deliveredAt: { type: Date, default: Date.now },
     paidOut: { type: Boolean, default: false, index: true },
   },
