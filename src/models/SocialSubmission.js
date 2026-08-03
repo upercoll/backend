@@ -20,15 +20,16 @@ const socialSubmissionSchema = new mongoose.Schema(
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
 
-    // Status flow: in_review → reviewed → accepted → paid
+    // Videos are tracked as soon as a creator submits them. `paid` is retained
+    // for completed balances, so existing tracker records stay compatible.
     status: {
       type: String,
-      enum: ["in_review", "reviewed", "accepted", "paid"],
-      default: "in_review",
+      enum: ["active", "in_review", "reviewed", "accepted", "paid"],
+      default: "active",
     },
 
     // Set by admin during review
-    rateType: { type: String, enum: ["per_view", "auto"] },
+    rateType: { type: String, enum: ["per_view", "auto", "per_1k", "per_video"] },
     ratePerView: { type: Number },    // $ per view
     offeredAmount: { type: Number },  // total offered to creator
     adminNote: { type: String, default: "" },
@@ -45,6 +46,7 @@ const socialSubmissionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "SocialPayout",
     },
+    paidAmount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
