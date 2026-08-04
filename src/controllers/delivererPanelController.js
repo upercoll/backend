@@ -15,6 +15,13 @@ function getCommissionRateForGame(deliverer, game) {
   return assignment ? assignment.commissionRate : (deliverer.commissionRate ?? 20);
 }
 
+function canHandleGame(deliverer, game) {
+  const assignedGames = getAssignedGames(deliverer);
+  // Members without any assignments retain the pre-assignment all-games
+  // behavior. A missing game is also available because it cannot be routed.
+  return assignedGames.length === 0 || !game || assignedGames.includes(game);
+}
+
 // GET /api/deliverer/claims — pending queue + my active sessions
 exports.getClaims = catchAsync(async (req, res) => {
   const delivererId = req.deliverer._id;
@@ -66,6 +73,9 @@ exports.claimSession = catchAsync(async (req, res, next) => {
     return next(new AppError("Session is no longer available to claim", 400));
 
   const deliverer = req.deliverer;
+  if (!canHandleGame(deliverer, session.game)) {
+    return next(new AppError("This claim belongs to a game you are not assigned to", 403));
+  }
   session.status = "active";
   session.assignedAgent = {
     userId: deliverer._id,
