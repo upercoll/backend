@@ -95,7 +95,9 @@ function normalizeAssignments(assignments, fallbackRate) {
       throw new AppError("Each game commission rate must be between 0 and 100", 400);
     }
     seenGames.add(game);
-    return { game, commissionRate };
+    // Return a plain object so Mongoose does not retain an older subdocument
+    // value when an assignment's rate has been edited.
+    return { game, commissionRate: Number(commissionRate.toFixed(2)) };
   });
 }
 
@@ -104,27 +106,28 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
   const { name, status, commissionRate, assignments, games } = req.body;
-  if (name !== undefined) deliverer.name = name;
-  if (status) deliverer.status = status;
-  if (commissionRate !== undefined) deliverer.commissionRate = commissionRate;
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (status) updates.status = status;
+  if (commissionRate !== undefined) updates.commissionRate = commissionRate;
   const assignmentInput = assignments !== undefined
     ? assignments
-    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: deliverer.commissionRate ?? 20 })) : undefined);
+    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: commissionRate ?? deliverer.commissionRate ?? 20 })) : undefined);
   if (assignmentInput !== undefined) {
-    const normalizedAssignments = normalizeAssignments(assignmentInput, deliverer.commissionRate ?? 20);
+    const normalizedAssignments = normalizeAssignments(assignmentInput, commissionRate ?? deliverer.commissionRate ?? 20);
     // Save both representations in the same update.  The assignment modal and
     // the older delivery-team screen use different formats, and other delivery
     // flows still read `games`.
-    deliverer.set({
-      assignments: normalizedAssignments,
-      games: normalizedAssignments.map((assignment) => assignment.game),
-    });
-    deliverer.markModified("assignments");
-    deliverer.markModified("games");
+    updates.assignments = normalizedAssignments;
+    updates.games = normalizedAssignments.map((assignment) => assignment.game);
   }
 
-  await deliverer.save();
-  res.json({ success: true, data: { deliverer } });
+  const updatedDeliverer = await Deliverer.findByIdAndUpdate(
+    deliverer._id,
+    { $set: updates },
+    { new: true, runValidators: true }
+  );
+  res.json({ success: true, data: { deliverer: updatedDeliverer } });
 });
 
 exports.markPaid = catchAsync(async (req, res, next) => {
