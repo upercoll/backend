@@ -97,7 +97,7 @@ exports.inviteDeliverer = catchAsync(async (req, res, next) => {
 });
 
 function normalizeAssignments(assignments, fallbackRate) {
-  if (assignments === undefined) return [];
+  if (assignments === undefined) return undefined;
   if (!Array.isArray(assignments)) throw new AppError("Assignments must be a list of games and commission rates", 400);
 
   const seenGames = new Set();
@@ -128,14 +128,14 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   if (name !== undefined) updates.name = name;
   if (status) updates.status = status;
   if (commissionRate !== undefined) updates.commissionRate = commissionRate;
+  const effectiveRate = commissionRate !== undefined
+    ? Number(commissionRate)
+    : Number(deliverer.commissionRate ?? 20);
   const assignmentInput = assignments !== undefined
     ? assignments
-    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: commissionRate ?? deliverer.commissionRate ?? 20 })) : undefined);
+    : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: effectiveRate })) : undefined);
   if (assignmentInput !== undefined) {
-    const normalizedAssignments = normalizeAssignments(
-      assignmentInput,
-      commissionRate ?? deliverer.commissionRate ?? 20
-    );
+    const normalizedAssignments = normalizeAssignments(assignmentInput, effectiveRate);
     // Save both representations in the same update.  The assignment modal and
     // the older delivery-team screen use different formats, and other delivery
     // flows still read `games`.
@@ -143,8 +143,11 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
     updates.games = normalizedAssignments.map((assignment) => assignment.game);
   }
 
-  await Deliverer.collection.updateOne({ _id: deliverer._id }, { $set: updates });
-  const updatedDeliverer = await Deliverer.findById(deliverer._id);
+  const updatedDeliverer = await Deliverer.findOneAndUpdate(
+    { _id: deliverer._id },
+    { $set: updates },
+    { new: true, runValidators: true }
+  ).lean();
   res.json({ success: true, data: { deliverer: updatedDeliverer } });
 });
 
