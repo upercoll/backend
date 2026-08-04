@@ -105,7 +105,7 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const { name, status, commissionRate, assignments, games } = req.body;
+  const { name, status, commissionRate, assignments, games, assignmentRates } = req.body;
   const updates = {};
   if (name !== undefined) updates.name = name;
   if (status) updates.status = status;
@@ -114,7 +114,14 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
     ? assignments
     : (Array.isArray(games) ? games.map((game) => ({ game, commissionRate: commissionRate ?? deliverer.commissionRate ?? 20 })) : undefined);
   if (assignmentInput !== undefined) {
-    const normalizedAssignments = normalizeAssignments(assignmentInput, commissionRate ?? deliverer.commissionRate ?? 20);
+    const normalizedAssignments = normalizeAssignments(assignmentInput, commissionRate ?? deliverer.commissionRate ?? 20)
+      .map((assignment) => ({
+        ...assignment,
+        commissionRate: assignmentRates && Object.prototype.hasOwnProperty.call(assignmentRates, assignment.game)
+          ? Number(assignmentRates[assignment.game])
+          : assignment.commissionRate,
+      }));
+    normalizeAssignments(normalizedAssignments, commissionRate ?? deliverer.commissionRate ?? 20);
     // Save both representations in the same update.  The assignment modal and
     // the older delivery-team screen use different formats, and other delivery
     // flows still read `games`.
@@ -122,11 +129,8 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
     updates.games = normalizedAssignments.map((assignment) => assignment.game);
   }
 
-  const updatedDeliverer = await Deliverer.findByIdAndUpdate(
-    deliverer._id,
-    { $set: updates },
-    { new: true, runValidators: true }
-  );
+  await Deliverer.collection.updateOne({ _id: deliverer._id }, { $set: updates });
+  const updatedDeliverer = await Deliverer.findById(deliverer._id);
   res.json({ success: true, data: { deliverer: updatedDeliverer } });
 });
 
