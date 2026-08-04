@@ -5,6 +5,20 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { sendInviteEmail } = require("../config/email");
 
+function calculateUnpaidDeliveryTotals(records) {
+  return records.reduce(
+    (totals, record) => {
+      const commissionDue = Math.max(0, (record.commission || 0) - (record.paidAmount || 0));
+      if (commissionDue <= 0) return totals;
+      totals.commission += commissionDue;
+      totals.revenue += (record.orderTotal || 0) * (commissionDue / (record.commission || 1));
+      totals.count += 1;
+      return totals;
+    },
+    { commission: 0, revenue: 0, count: 0 }
+  );
+}
+
 exports.listDeliverers = catchAsync(async (req, res) => {
   const deliverers = await Deliverer.find({ active: true }).sort({ createdAt: -1 });
   const enriched = await Promise.all(
@@ -25,17 +39,21 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
     .sort({ deliveredAt: -1 })
     .limit(100);
 
-  const unpaidRecords = records.filter((r) => !r.paidOut);
+  const unpaidTotals = calculateUnpaidDeliveryTotals(records);
+  const delivererData = deliverer.toObject();
+  // Record-level amounts are the source of truth for partial payouts.
+  delivererData.totalRevenue = Number(unpaidTotals.revenue.toFixed(2));
+  delivererData.totalCommission = Number(unpaidTotals.commission.toFixed(2));
   const stats = {
     totalDeliveries: records.length,
-    unpaidDeliveries: unpaidRecords.length,
-    totalRevenue: deliverer.totalRevenue,
-    totalCommission: deliverer.totalCommission,
+    unpaidDeliveries: unpaidTotals.count,
+    totalRevenue: delivererData.totalRevenue,
+    totalCommission: delivererData.totalCommission,
     lifetimeRevenue: deliverer.lifetimeRevenue,
     lifetimeCommission: deliverer.lifetimeCommission,
   };
 
-  res.json({ success: true, data: { deliverer, records, stats } });
+  res.json({ success: true, data: { deliverer: delivererData, records, stats } });
 });
 
 function normalizeAssignments(assignments, fallbackRate) {
@@ -135,29 +153,49 @@ exports.updateDeliverer = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: { deliverer: updatedDeliverer } });
 });
 
-// Mark all unpaid deliveries as paid — resets tracking totals
+// Mark deliveries as paid — supports paying a partial amount, allocated
+// oldest-first across unpaid delivery records.
 exports.markPaid = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
-  const paidRevenue = deliverer.totalRevenue;
-  const paidCommission = deliverer.totalCommission;
+  const records = await DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false }).sort({ deliveredAt: 1 });
+  const owed = Number(calculateUnpaidDeliveryTotals(records).commission.toFixed(2));
+  const requestedAmount = req.body?.amount === undefined ? owed : Number(req.body.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > owed + 0.001) {
+    return next(new AppError(`Enter an amount between $0.01 and $${owed.toFixed(2)}`, 400));
+  }
 
-  // Mark all unpaid records as paid
-  await DeliveryRecord.updateMany(
-    { deliverer: deliverer._id, paidOut: false },
-    { $set: { paidOut: true } }
-  );
+  let remaining = Number(requestedAmount.toFixed(2));
+  let paidRevenue = 0;
+  for (const record of records) {
+    if (remaining <= 0) break;
+    const due = Math.max(0, (record.commission || 0) - (record.paidAmount || 0));
+    const allocation = Number(Math.min(due, remaining).toFixed(2));
+    if (!allocation) continue;
+    record.paidAmount = Number(((record.paidAmount || 0) + allocation).toFixed(2));
+    if (record.paidAmount + 0.001 >= (record.commission || 0)) record.paidOut = true;
+    paidRevenue += (record.orderTotal || 0) * (allocation / (record.commission || 1));
+    remaining = Number((remaining - allocation).toFixed(2));
+    await record.save();
+  }
 
-  // Reset unpaid tracking totals
-  deliverer.totalRevenue = 0;
-  deliverer.totalCommission = 0;
+  const remainingRecords = await DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false });
+  const remainingTotals = calculateUnpaidDeliveryTotals(remainingRecords);
+  deliverer.totalCommission = Number(remainingTotals.commission.toFixed(2));
+  deliverer.totalRevenue = Number(remainingTotals.revenue.toFixed(2));
   deliverer.lastPayoutAt = new Date();
   await deliverer.save();
 
   res.json({
     success: true,
-    data: { paidRevenue, paidCommission, lastPayoutAt: deliverer.lastPayoutAt },
+    data: {
+      paidRevenue: Number(paidRevenue.toFixed(2)),
+      paidCommission: requestedAmount,
+      remainingCommission: deliverer.totalCommission,
+      remainingRevenue: deliverer.totalRevenue,
+      lastPayoutAt: deliverer.lastPayoutAt,
+    },
   });
 });
 
