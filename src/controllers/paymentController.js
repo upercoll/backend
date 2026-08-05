@@ -6,6 +6,12 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const logger = require("../utils/logger");
 const { sendOrderConfirmationEmail } = require("../config/email");
+const {
+  removeStock,
+  addStock,
+  allocateStockedBatches,
+  rollbackStockedBatchAllocations,
+} = require("../services/stockService");
 
 async function resolveCartItems(cartItems) {
   if (!Array.isArray(cartItems) || cartItems.length === 0) {
@@ -123,6 +129,34 @@ function fireOrderConfirmationEmail(order) {
   }).catch((err) => logger.warn("Order confirmation email failed:", err.message));
 }
 
+async function finalizePaidOrder(order) {
+  const decrementedItems = [];
+  for (const item of order.items) {
+    const product = await removeStock(item.product, item.quantity);
+    if (!product) {
+      await Promise.all(decrementedItems.map((previousItem) => addStock(previousItem.product, previousItem.quantity)));
+      throw new AppError(
+        `"${item.productSnapshot?.name || "Item"}" no longer has enough stock to fulfill this order`,
+        409
+      );
+    }
+    decrementedItems.push(item);
+  }
+
+  try {
+    await allocateStockedBatches(order);
+  } catch (error) {
+    await Promise.all(decrementedItems.map((item) => addStock(item.product, item.quantity)));
+    await rollbackStockedBatchAllocations(order._id);
+    throw error;
+  }
+  order.payment.status = "succeeded";
+  order.payment.paidAt = new Date();
+  order.status = "paid";
+  order.set("delivery.status", "in_progress");
+  await order.save();
+}
+
 exports.createPaymentIntent = catchAsync(async (req, res, next) => {
   const { cartItems, customer, paymentMethodId, promoCode } = req.body;
 
@@ -233,28 +267,7 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
       });
     }
 
-    order.payment.status = "succeeded";
-    order.payment.paidAt = new Date();
-    order.status = "paid";
-    order.set("delivery.status", "in_progress");
-    await order.save();
-
-    order.items.forEach(({ product, quantity }) => {
-      Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
-      // Only decrement finite stock (stock !== -1) and only if enough remains (atomic guard)
-      Product.findOneAndUpdate(
-        { _id: product, stock: { $gte: quantity } },
-        { $inc: { stock: -quantity } },
-        { new: true }
-      ).then(p => {
-        if (p && p.stock <= 0) Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
-      }).catch(() => {});
-      // Also decrement onHand (physical inventory) when items are sold
-      Product.findOneAndUpdate(
-        { _id: product, onHand: { $gte: quantity } },
-        { $inc: { onHand: -quantity } }
-      ).catch(() => {});
-    });
+    await finalizePaidOrder(order);
 
     fireOrderConfirmationEmail(order);
 
@@ -343,27 +356,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
     case "payment_intent.succeeded": {
       const order = await Order.findOne({ "payment.stripePaymentIntentId": intent.id });
       if (order && order.payment.status !== "succeeded") {
-        order.payment.status = "succeeded";
-        order.payment.paidAt = new Date();
-        order.status = "paid";
-        order.set("delivery.status", "in_progress");
-        await order.save();
-        order.items.forEach(({ product, quantity }) => {
-          Product.findByIdAndUpdate(product, { $inc: { salesCount: quantity } }).catch(() => {});
-          // Only decrement finite stock (stock !== -1) and only if enough remains (atomic guard)
-          Product.findOneAndUpdate(
-            { _id: product, stock: { $gte: quantity } },
-            { $inc: { stock: -quantity } },
-            { new: true }
-          ).then(p => {
-            if (p && p.stock <= 0) Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
-          }).catch(() => {});
-          // Also decrement onHand (physical inventory) when items are sold
-          Product.findOneAndUpdate(
-            { _id: product, onHand: { $gte: quantity } },
-            { $inc: { onHand: -quantity } }
-          ).catch(() => {});
-        });
+        await finalizePaidOrder(order);
         logger.info(`Order paid via webhook: ${order.orderNumber}`);
         fireOrderConfirmationEmail(order);
       }
