@@ -8,6 +8,42 @@ const catchAsync = require("../utils/catchAsync");
 const crypto = require("crypto");
 const { sendInviteEmail } = require("../config/email");
 const { addStock, removeStockForDeletedRequest } = require("../services/stockService");
+const money = (value) => Number((Number(value) || 0).toFixed(2));
+
+async function getStockerLedgerTotals(stockerId) {
+  const [sales, payouts] = await Promise.all([
+    StockSale.find({ deliveredAt: { $exists: true }, "allocations.stocker": stockerId })
+      .select("allocations")
+      .lean(),
+    StockerPayout.find({ stocker: stockerId }).select("saleAllocations").lean(),
+  ]);
+  const paidByAllocation = new Map();
+  for (const payout of payouts) {
+    for (const allocation of payout.saleAllocations || []) {
+      const key = `${allocation.sale}:${allocation.allocationIndex}`;
+      paidByAllocation.set(key, money((paidByAllocation.get(key) || 0) + allocation.amount));
+    }
+  }
+  let totalRevenue = 0;
+  let totalCommissionEarned = 0;
+  let totalCommissionPaid = 0;
+  for (const sale of sales) {
+    sale.allocations.forEach((allocation, allocationIndex) => {
+      if (String(allocation.stocker) !== String(stockerId)) return;
+      const revenue = money(allocation.unitRevenue * allocation.quantity);
+      const commission = money(revenue * (allocation.commissionRate / 100));
+      totalRevenue = money(totalRevenue + revenue);
+      totalCommissionEarned = money(totalCommissionEarned + commission);
+      totalCommissionPaid = money(totalCommissionPaid + Math.min(commission, paidByAllocation.get(`${sale._id}:${allocationIndex}`) || 0));
+    });
+  }
+  return {
+    totalRevenue,
+    totalCommissionEarned,
+    totalCommissionPaid,
+    totalCommissionOwed: money(Math.max(0, totalCommissionEarned - totalCommissionPaid)),
+  };
+}
 
 exports.listStockers = catchAsync(async (req, res) => {
   const stockers = await Stocker.find({ active: true }).sort({ createdAt: -1 });
@@ -31,14 +67,14 @@ exports.getStockerDetail = catchAsync(async (req, res, next) => {
     .sort({ createdAt: -1 })
     .limit(50);
 
+  const ledger = await getStockerLedgerTotals(stocker._id);
   const stats = {
     totalRequests: requests.length,
     pendingRequests: requests.filter((r) => r.status === "pending").length,
     approvedRequests: requests.filter((r) => r.status === "approved").length,
     stockedRequests: requests.filter((r) => r.status === "stocked").length,
     rejectedRequests: requests.filter((r) => r.status === "rejected").length,
-    totalRevenue: stocker.totalRevenue,
-    totalCommission: stocker.totalCommission,
+    ...ledger,
     totalStocked: stocker.totalStocked,
   };
 
@@ -233,6 +269,11 @@ exports.deleteRequest = catchAsync(async (req, res, next) => {
   const request = await StockRequest.findById(req.params.id);
   if (!request) return next(new AppError("Stock request not found", 404));
 
+  const saleExists = await StockSale.exists({ "allocations.request": request._id });
+  if (saleExists) {
+    return next(new AppError("This stock request has recorded sales and cannot be deleted. Keep it for accurate stocker accounting.", 409));
+  }
+
   // Reverse product stock if it was already stocked
   if (request.status === "stocked") {
     for (const item of request.items) {
@@ -266,7 +307,7 @@ exports.rejectRequest = catchAsync(async (req, res, next) => {
 });
 
 exports.getStockerStats = catchAsync(async (req, res) => {
-  const stockers = await Stocker.find({ active: true, status: "active" });
+   const stockers = await Stocker.find({ active: true, status: "active" });
 
   const stats = await Promise.all(
     stockers.map(async (s) => {
@@ -275,13 +316,13 @@ exports.getStockerStats = catchAsync(async (req, res) => {
         StockRequest.countDocuments({ stocker: s._id, status: "pending" }),
         StockRequest.countDocuments({ stocker: s._id, status: "stocked" }),
       ]);
-      return {
+       const ledger = await getStockerLedgerTotals(s._id);
+       return {
         stocker: { _id: s._id, name: s.name, email: s.email, commissionRate: s.commissionRate },
         totalRequests: total,
         pendingRequests: pending,
         stockedRequests: stocked,
-        totalRevenue: s.totalRevenue,
-        totalCommission: s.totalCommission,
+         ...ledger,
       };
     })
   );
@@ -302,11 +343,11 @@ async function computeUnpaidDeliveries(stocker) {
   let unpaidAmount = 0;
   sales.forEach((sale) => sale.allocations.forEach((allocation, allocationIndex) => {
     if (String(allocation.stocker) !== String(stocker._id)) return;
-    const commission = allocation.unitRevenue * allocation.quantity * (allocation.commissionRate / 100);
+     const commission = money(allocation.unitRevenue * allocation.quantity * (allocation.commissionRate / 100));
     const paidAmount = paidBySale.get(`${sale._id}:${allocationIndex}`) || 0;
     const remaining = Math.max(0, commission - paidAmount);
     if (remaining <= 0.0001) return;
-    unpaidAmount += remaining;
+     unpaidAmount = money(unpaidAmount + remaining);
     deliveries.push({
       saleId: String(sale._id),
       allocationIndex,
@@ -314,12 +355,13 @@ async function computeUnpaidDeliveries(stocker) {
       robloxUsername: sale.customer?.robloxUsername || "Customer",
       orderRef: sale.orderNumber,
       items: [{ name: sale.productName, quantity: allocation.quantity, salePrice: allocation.unitRevenue }],
-      revenue: allocation.unitRevenue * allocation.quantity,
+       revenue: money(allocation.unitRevenue * allocation.quantity),
       commission: remaining,
+      commissionRate: allocation.commissionRate,
       unpaidAmount: remaining,
     });
   }));
-  return { deliveries, unpaidAmount: Number(unpaidAmount.toFixed(2)), deliveryCount: deliveries.length };
+   return { deliveries, unpaidAmount: money(unpaidAmount), deliveryCount: deliveries.length };
 }
 
 exports.getStockerPayouts = catchAsync(async (req, res, next) => {
@@ -354,8 +396,8 @@ exports.markStockerPaid = catchAsync(async (req, res, next) => {
     return next(new AppError("No unpaid amount to mark as paid", 400));
   }
 
-  const requestedAmount = req.body?.amount === undefined ? unpaidData.unpaidAmount : Number(req.body.amount);
-  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > unpaidData.unpaidAmount + 0.001) {
+  const requestedAmount = req.body?.amount === undefined ? unpaidData.unpaidAmount : money(req.body.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > unpaidData.unpaidAmount) {
     return next(new AppError(`Enter an amount between $0.01 and $${unpaidData.unpaidAmount.toFixed(2)}`, 400));
   }
   let remaining = Number(requestedAmount.toFixed(2));
@@ -371,10 +413,19 @@ exports.markStockerPaid = catchAsync(async (req, res, next) => {
   const periodStart = stocker.lastPayoutAt || stocker.createdAt;
   const periodEnd = new Date();
 
+  const payoutCommissionRate = saleAllocations.length === 1
+    ? money(
+      unpaidData.deliveries.find((delivery) =>
+        delivery.saleId === saleAllocations[0].sale && delivery.allocationIndex === saleAllocations[0].allocationIndex
+      )?.commissionRate
+    )
+    : null;
   const payout = await StockerPayout.create({
     stocker: stocker._id,
     amount: requestedAmount,
-    commissionRate: stocker.commissionRate,
+    // Mixed-rate payouts have no single meaningful commission percentage. The
+    // exact rate is permanently stored on each paid sale allocation.
+    commissionRate: payoutCommissionRate ?? 0,
     deliveryCount: unpaidData.deliveryCount,
     periodStart,
     periodEnd,
