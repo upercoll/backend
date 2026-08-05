@@ -8,6 +8,8 @@ const stockItemSchema = new mongoose.Schema({
   imageUrl: { type: String },
   gradient: { from: String, to: String },
   quantity: { type: Number, required: true, min: 1 },
+  remainingQuantity: { type: Number, min: 0, default: 0 },
+  soldQuantity: { type: Number, min: 0, default: 0 },
   storePrice: { type: Number },
   customPrice: { type: Number },
   salePrice: { type: Number, required: true },
