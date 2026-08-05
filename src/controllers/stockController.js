@@ -78,6 +78,21 @@ exports.getStockerDetail = catchAsync(async (req, res, next) => {
     .sort({ createdAt: -1 })
     .limit(50);
 
+  // stocker.totalStocked is a manually-incremented counter (bumped by
+  // markStocked / markMyRequestStocked) rather than something computed from
+  // real data, so any historical double-execution — like the race condition
+  // that existed here before markStocked's approved->stocked transition was
+  // made atomic — permanently inflates it with no way to self-correct.
+  // Summing item quantities straight from this stocker's actual "stocked"
+  // requests is always correct regardless of what happened in the past, so
+  // that's what gets shown instead of trusting the stored counter.
+  const stockedAgg = await StockRequest.aggregate([
+    { $match: { stocker: stocker._id, status: "stocked" } },
+    { $unwind: "$items" },
+    { $group: { _id: null, total: { $sum: "$items.quantity" } } },
+  ]);
+  const totalStockedLive = stockedAgg[0]?.total || 0;
+
   const ledger = await getStockerLedgerTotals(stocker._id);
   const stats = {
     totalRequests: requests.length,
@@ -86,7 +101,7 @@ exports.getStockerDetail = catchAsync(async (req, res, next) => {
     stockedRequests: requests.filter((r) => r.status === "stocked").length,
     rejectedRequests: requests.filter((r) => r.status === "rejected").length,
     ...ledger,
-    totalStocked: stocker.totalStocked,
+    totalStocked: totalStockedLive,
   };
 
   res.json({ success: true, data: { stocker, requests, stats } });
