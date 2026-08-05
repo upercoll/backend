@@ -9,6 +9,7 @@ const {
   rollbackStockedBatchAllocations,
   markOrderDelivered,
 } = require("../services/stockService");
+const { finalizePaidOrder } = require("./paymentController");
 
 const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"];
 
@@ -18,12 +19,22 @@ function addTimeline(order, action, by, details) {
 }
 
 async function restoreOrderInventory(order) {
+  // Every paid order decrements product stock via removeStock() regardless of
+  // whether any of its items happen to come from a stocker's batch — but
+  // StockSale docs are only created for items that DID get allocated to a
+  // stocked batch. The old code used "does a StockSale exist?" as a proxy for
+  // "was stock decremented?" and bailed out entirely when it didn't, which
+  // meant cancelling or refunding an order made up purely of regular store
+  // stock silently never gave that stock back. Restoring product stock must
+  // always happen; rolling back stocker-batch allocations is the separate,
+  // conditional part.
   const StockSale = require("../models/StockSale");
   const allocations = await StockSale.countDocuments({ order: order._id });
-  if (!allocations) return false;
-  await rollbackStockedBatchAllocations(order._id);
+  if (allocations) {
+    await rollbackStockedBatchAllocations(order._id);
+  }
   for (const item of order.items || []) {
-    await addStock(item.product, item.quantity);
+    if (item.product) await addStock(item.product, item.quantity);
   }
   return true;
 }
@@ -530,14 +541,18 @@ exports.syncStripePayments = catchAsync(async (req, res) => {
       const intent = await stripe.paymentIntents.retrieve(order.payment.stripePaymentIntentId);
 
       if (intent.status === "succeeded") {
-        order.payment.status = "succeeded";
-        order.payment.paidAt = order.payment.paidAt || new Date(intent.created * 1000);
-        order.status = "paid";
-        if (!order.delivery) order.delivery = {};
-        order.set("delivery.status", "in_progress");
-        await order.save();
-        fixed++;
-        fixedOrders.push(order.orderNumber);
+        // This used to hand-write the same status flip finalizePaidOrder does,
+        // but skipped the actual finalization: no stock was ever decremented
+        // and no StockSale/commission allocation was ever recorded for orders
+        // "fixed" this way, even though the order is shown as paid. That's the
+        // root of the inventory and revenue mismatches — reuse the real
+        // finalization path instead so stock and stocker payouts stay correct.
+        const finalizedOrder = await finalizePaidOrder(order);
+        if (finalizedOrder) {
+          fixed++;
+          fixedOrders.push(order.orderNumber);
+        }
+        // else: already finalized by a concurrent process (e.g. the webhook beat us here) — nothing to do.
       } else if (intent.status === "canceled" || intent.status === "payment_failed") {
         alreadyFailed++;
       } else {
