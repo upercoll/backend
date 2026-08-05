@@ -43,9 +43,27 @@ async function getDeliveredLedgerTotals(stockerId) {
   };
 }
 
+// stocker.totalStocked is a counter incremented by markMyRequestStocked /
+// markStocked rather than derived from real data, so any historical
+// double-execution (e.g. the race condition that used to exist before that
+// transition was made atomic) permanently inflates it with no way to
+// self-correct. Summing item quantities from this stocker's actual "stocked"
+// requests is always correct regardless of what happened in the past.
+async function getLiveTotalStocked(stockerId) {
+  const agg = await StockRequest.aggregate([
+    { $match: { stocker: stockerId, status: "stocked" } },
+    { $unwind: "$items" },
+    { $group: { _id: null, total: { $sum: "$items.quantity" } } },
+  ]);
+  return agg[0]?.total || 0;
+}
+
 exports.getProfile = catchAsync(async (req, res) => {
   const stocker = req.stocker;
-  const ledger = await getDeliveredLedgerTotals(stocker._id);
+  const [ledger, totalStocked] = await Promise.all([
+    getDeliveredLedgerTotals(stocker._id),
+    getLiveTotalStocked(stocker._id),
+  ]);
   res.json({
     success: true,
     data: {
@@ -55,7 +73,7 @@ exports.getProfile = catchAsync(async (req, res) => {
         name: stocker.name,
         games: stocker.games,
         commissionRate: stocker.commissionRate,
-        totalStocked: stocker.totalStocked,
+        totalStocked,
        ...ledger,
         status: stocker.status,
         cryptoAddress: stocker.cryptoAddress,
@@ -361,7 +379,7 @@ exports.getMyStats = catchAsync(async (req, res) => {
         approvedRequests: requests.filter((r) => r.status === "approved").length,
         stockedRequests: stocked.length,
         rejectedRequests: requests.filter((r) => r.status === "rejected").length,
-        totalStocked: stocker.totalStocked,
+        totalStocked: stocked.reduce((sum, r) => sum + r.items.reduce((s, i) => s + (i.quantity || 0), 0), 0),
          ...ledger,
         commissionRate: stocker.commissionRate,
       },
