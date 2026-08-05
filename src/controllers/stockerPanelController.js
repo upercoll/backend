@@ -282,11 +282,19 @@ async function getUnpaidSaleAllocations(stocker) {
 
 exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
   const stocker = req.stocker;
-  const request = await StockRequest.findOne({ _id: req.params.id, stocker: stocker._id });
+  // Same atomic-claim guard as the admin markStocked path: flip approved ->
+  // stocked first so a double-click (or a race with the admin panel doing
+  // the same thing) can't both pass the status check and both add real
+  // inventory twice.
+  const claimed = await StockRequest.findOneAndUpdate(
+    { _id: req.params.id, stocker: stocker._id, status: "approved" },
+    { $set: { status: "stocked" } },
+    { new: true }
+  );
+  if (!claimed) return next(new AppError("Request must be approved before you can mark it as stocked", 400));
+
+  const request = await StockRequest.findOne({ _id: claimed._id, stocker: stocker._id });
   if (!request) return next(new AppError("Stock request not found", 404));
-  if (request.status !== "approved") {
-    return next(new AppError("Request must be approved before you can mark it as stocked", 400));
-  }
 
   // Update product stock counts
   for (const item of request.items) {
@@ -302,7 +310,6 @@ exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
   );
   const commission = (storeBasedTotal * (stocker.commissionRate || 0)) / 100;
 
-  request.status = "stocked";
   request.stockedAt = new Date();
   request.stockedBy = stocker.email;
   request.commission = commission;
