@@ -8,6 +8,7 @@ const AdminProfile = require("../models/AdminProfile");
 const Product = require("../models/Product");
 const { sendAgentReplyNotificationEmail } = require("./email");
 const logger = require("../utils/logger");
+const { removeStock, markOrderDelivered } = require("../services/stockService");
 
 let io;
 
@@ -543,23 +544,25 @@ function initSocket(server) {
             for (const item of session.items || []) {
               if (!item.name) continue;
               const qty = item.quantity || 1;
-              let filter = null;
+              let product = null;
               if (item.itemId && /^[0-9a-f]{24}$/i.test(item.itemId)) {
-                filter = { _id: item.itemId, stock: { $gt: 0 } };
+                product = await Product.findById(item.itemId).select("_id");
               } else {
-                filter = { name: new RegExp(`^${item.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"), active: true, stock: { $gt: 0 } };
+                product = await Product.findOne({
+                  name: new RegExp(`^${item.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+                  active: true,
+                }).select("_id");
               }
-              const p = await Product.findOneAndUpdate(
-                filter,
-                { $inc: { stock: -qty, salesCount: qty } },
-                { new: true }
-              );
-              if (p && p.stock <= 0) {
-                Product.findByIdAndUpdate(p._id, { outOfStock: true }).catch(() => {});
-              }
+              if (product) await removeStock(product._id, qty);
             }
           } catch (stockErr) {
             logger.error("Failed to decrement product stock on claim delivery:", stockErr);
+          }
+        } else {
+          try {
+            await markOrderDelivered(session.orderRef, session.roomId);
+          } catch (stockErr) {
+            logger.error("Failed to record stocked-item delivery:", stockErr);
           }
         }
 
