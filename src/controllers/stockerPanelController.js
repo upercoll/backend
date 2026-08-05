@@ -6,9 +6,46 @@ const StockSale = require("../models/StockSale");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { addStock } = require("../services/stockService");
+const money = (value) => Number((Number(value) || 0).toFixed(2));
+
+async function getDeliveredLedgerTotals(stockerId) {
+  const [sales, payouts] = await Promise.all([
+    StockSale.find({ deliveredAt: { $exists: true }, "allocations.stocker": stockerId })
+      .select("allocations")
+      .lean(),
+    StockerPayout.find({ stocker: stockerId }).select("saleAllocations").lean(),
+  ]);
+  const paidByAllocation = new Map();
+  for (const payout of payouts) {
+    for (const allocation of payout.saleAllocations || []) {
+      const key = `${allocation.sale}:${allocation.allocationIndex}`;
+      paidByAllocation.set(key, money((paidByAllocation.get(key) || 0) + allocation.amount));
+    }
+  }
+  let totalRevenue = 0;
+  let totalCommissionEarned = 0;
+  let totalCommissionPaid = 0;
+  for (const sale of sales) {
+    sale.allocations.forEach((allocation, allocationIndex) => {
+      if (String(allocation.stocker) !== String(stockerId)) return;
+      const revenue = money(allocation.unitRevenue * allocation.quantity);
+      const commission = money(revenue * (allocation.commissionRate / 100));
+      totalRevenue = money(totalRevenue + revenue);
+      totalCommissionEarned = money(totalCommissionEarned + commission);
+      totalCommissionPaid = money(totalCommissionPaid + Math.min(commission, paidByAllocation.get(`${sale._id}:${allocationIndex}`) || 0));
+    });
+  }
+  return {
+    totalRevenue,
+    totalCommissionEarned,
+    totalCommissionPaid,
+    totalCommissionOwed: money(Math.max(0, totalCommissionEarned - totalCommissionPaid)),
+  };
+}
 
 exports.getProfile = catchAsync(async (req, res) => {
   const stocker = req.stocker;
+  const ledger = await getDeliveredLedgerTotals(stocker._id);
   res.json({
     success: true,
     data: {
@@ -19,8 +56,7 @@ exports.getProfile = catchAsync(async (req, res) => {
         games: stocker.games,
         commissionRate: stocker.commissionRate,
         totalStocked: stocker.totalStocked,
-        totalRevenue: stocker.totalRevenue,
-        totalCommission: stocker.totalCommission,
+       ...ledger,
         status: stocker.status,
         cryptoAddress: stocker.cryptoAddress,
         cryptoNetwork: stocker.cryptoNetwork,
@@ -221,12 +257,12 @@ async function getUnpaidSaleAllocations(stocker) {
   for (const sale of sales) {
     sale.allocations.forEach((allocation, allocationIndex) => {
       if (String(allocation.stocker) !== String(stocker._id)) return;
-      const revenue = allocation.unitRevenue * allocation.quantity;
-      const commission = revenue * (allocation.commissionRate / 100);
+       const revenue = money(allocation.unitRevenue * allocation.quantity);
+       const commission = money(revenue * (allocation.commissionRate / 100));
       const paidAmount = paidBySale.get(`${sale._id}:${allocationIndex}`) || 0;
       const remaining = Math.max(0, commission - paidAmount);
       if (remaining <= 0.0001) return;
-      unpaidAmount += remaining;
+       unpaidAmount = money(unpaidAmount + remaining);
       deliveries.push({
         saleId: String(sale._id),
         allocationIndex,
@@ -237,10 +273,11 @@ async function getUnpaidSaleAllocations(stocker) {
         items: [{ name: sale.productName, quantity: allocation.quantity, salePrice: allocation.unitRevenue }],
         revenue,
         commission: remaining,
+       commissionRate: allocation.commissionRate,
       });
     });
   }
-  return { deliveries: deliveries.reverse(), unpaidAmount: Number(unpaidAmount.toFixed(2)) };
+   return { deliveries: deliveries.reverse(), unpaidAmount: money(unpaidAmount) };
 }
 
 exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
@@ -285,6 +322,7 @@ exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
 
 exports.getMyStats = catchAsync(async (req, res) => {
   const stocker = req.stocker;
+  const ledger = await getDeliveredLedgerTotals(stocker._id);
 
   const requests = await StockRequest.find({ stocker: stocker._id });
   const stocked = requests.filter((r) => r.status === "stocked");
@@ -317,8 +355,7 @@ exports.getMyStats = catchAsync(async (req, res) => {
         stockedRequests: stocked.length,
         rejectedRequests: requests.filter((r) => r.status === "rejected").length,
         totalStocked: stocker.totalStocked,
-        totalRevenue: stocker.totalRevenue,
-        totalCommission: stocker.totalCommission,
+         ...ledger,
         commissionRate: stocker.commissionRate,
       },
       recentRequests: requests.slice(0, 10),
