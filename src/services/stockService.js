@@ -1,7 +1,6 @@
 const Product = require("../models/Product");
 const StockRequest = require("../models/StockRequest");
 const StockSale = require("../models/StockSale");
-const Stocker = require("../models/Stocker");
 
 const finiteQuantity = (value) => Number.isInteger(value) && value > 0;
 
@@ -125,6 +124,8 @@ async function allocateStockedBatches(order) {
         stocker: request.stocker,
         quantity: allocatedQuantity,
         unitRevenue: Number(requestItem.storePrice ?? requestItem.salePrice ?? 0),
+        // Freeze the rate selected when this batch was stocked. A later profile
+        // edit must never change what a completed sale pays.
         commissionRate: Number(request.commissionRate || 0),
       });
       remaining -= allocatedQuantity;
@@ -182,14 +183,6 @@ async function markOrderDelivered(orderNumber, claimRoomId) {
     );
     if (!updated) continue;
 
-    for (const allocation of updated.allocations) {
-      const revenue = allocation.unitRevenue * allocation.quantity;
-      const commission = revenue * (allocation.commissionRate / 100);
-      await Stocker.updateOne(
-        { _id: allocation.stocker },
-        { $inc: { totalRevenue: revenue, totalCommission: commission } }
-      );
-    }
   }
   return sales;
 }
