@@ -2,8 +2,10 @@ const Stocker = require("../models/Stocker");
 const StockRequest = require("../models/StockRequest");
 const StockerPayout = require("../models/StockerPayout");
 const Product = require("../models/Product");
+const StockSale = require("../models/StockSale");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const { addStock } = require("../services/stockService");
 
 exports.getProfile = catchAsync(async (req, res) => {
   const stocker = req.stocker;
@@ -150,160 +152,31 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
 
 exports.getSoldDeliveries = catchAsync(async (req, res) => {
   const stocker = req.stocker;
-
-  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
-
-  const stockedProductNames = new Set();
-  const stockedProductMap = {};
-  const stockedQuantityMap = {};
-
-  for (const r of stockedRequests) {
-    for (const item of r.items || []) {
-      const nameLower = item.productName?.toLowerCase();
-      if (nameLower) {
-        stockedProductNames.add(nameLower);
-        if (!stockedProductMap[nameLower]) {
-          stockedProductMap[nameLower] = {
-            productName: item.productName,
-            imageUrl: item.imageUrl,
-            game: item.game || r.game,
-            salePrice: item.salePrice || 0,
-          };
-        }
-        stockedQuantityMap[nameLower] = (stockedQuantityMap[nameLower] || 0) + (item.quantity || 1);
-      }
-    }
-  }
-
-  if (stockedProductNames.size === 0) {
-    return res.json({ success: true, data: { deliveries: [], total: 0 } });
-  }
-
-  const ClaimSession = require("../models/ClaimSession");
-  const deliveredSessions = await ClaimSession.find({ status: { $in: ["claimed", "ended"] } })
-    .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef createdAt roomId")
-    .sort({ resolvedAt: 1 })
-    .lean();
-
-  const remainingQty = { ...stockedQuantityMap };
-  const deliveries = [];
-
-  for (const session of deliveredSessions) {
-    let sessionItems = [...(session.items || [])];
-    if (session.itemName && sessionItems.length === 0) {
-      sessionItems = [{ name: session.itemName, quantity: 1 }];
-    }
-
-    const creditedItems = [];
-    for (const item of sessionItems) {
-      const key = item.name?.toLowerCase();
-      if (!key || !stockedProductNames.has(key)) continue;
-      const remaining = remainingQty[key] || 0;
-      if (remaining <= 0) continue;
-      const creditQty = Math.min(item.quantity || 1, remaining);
-      remainingQty[key] -= creditQty;
-      creditedItems.push({ ...item, quantity: creditQty, ...(stockedProductMap[key] || {}) });
-    }
-
-    if (creditedItems.length > 0) {
-      deliveries.push({
-        roomId: session.roomId,
-        robloxUsername: session.robloxUsername,
-        game: session.game,
-        orderRef: session.orderRef,
-        agentName: session.assignedAgent?.name || "Unknown Agent",
-        deliveredAt: session.resolvedAt || session.createdAt,
-        items: creditedItems,
-      });
-    }
-  }
-
-  deliveries.sort((a, b) => new Date(b.deliveredAt) - new Date(a.deliveredAt));
+  const sales = await StockSale.find({
+    deliveredAt: { $exists: true },
+    "allocations.stocker": stocker._id,
+  }).sort({ deliveredAt: -1 }).lean();
+  const deliveries = sales.map((sale) => {
+    const allocations = sale.allocations.filter((allocation) => String(allocation.stocker) === String(stocker._id));
+    return {
+      roomId: sale.claimRoomId,
+      robloxUsername: sale.customer?.robloxUsername || "Customer",
+      orderRef: sale.orderNumber,
+      deliveredAt: sale.deliveredAt,
+      items: allocations.map((allocation) => ({
+        name: sale.productName,
+        quantity: allocation.quantity,
+        salePrice: allocation.unitRevenue,
+      })),
+    };
+  });
 
   res.json({ success: true, data: { deliveries, total: deliveries.length } });
 });
 
 exports.getMyPayouts = catchAsync(async (req, res) => {
   const stocker = req.stocker;
-
-  const stockedRequests = await StockRequest.find({ stocker: stocker._id, status: "stocked" }).lean();
-  const stockedProductNames = new Set();
-  const stockedProductMap = {};
-  const stockedQuantityMap = {};
-
-  for (const r of stockedRequests) {
-    for (const item of r.items || []) {
-      const nameLower = item.productName?.toLowerCase();
-      if (nameLower) {
-        stockedProductNames.add(nameLower);
-        if (!stockedProductMap[nameLower]) {
-          stockedProductMap[nameLower] = {
-            productName: item.productName,
-            // Commission is based on store price, not the stocker's custom price
-            salePrice: item.storePrice || item.salePrice || 0,
-          };
-        }
-        stockedQuantityMap[nameLower] = (stockedQuantityMap[nameLower] || 0) + (item.quantity || 1);
-      }
-    }
-  }
-
-  let unpaidDeliveries = [];
-  let unpaidAmount = 0;
-
-  if (stockedProductNames.size > 0) {
-    const ClaimSession = require("../models/ClaimSession");
-    const since = stocker.lastPayoutAt || stocker.createdAt;
-    const deliveredSessions = await ClaimSession.find({
-      status: { $in: ["claimed", "ended"] },
-      resolvedAt: { $gt: since },
-    })
-      .select("robloxUsername items itemName assignedAgent resolvedAt game orderRef roomId")
-      .sort({ resolvedAt: 1 })
-      .lean();
-
-    const remainingQty = { ...stockedQuantityMap };
-
-    for (const session of deliveredSessions) {
-      let sessionItems = [...(session.items || [])];
-      if (session.itemName && sessionItems.length === 0) {
-        sessionItems = [{ name: session.itemName, quantity: 1 }];
-      }
-
-      const creditedItems = [];
-      let sessionRevenue = 0;
-
-      for (const item of sessionItems) {
-        const key = item.name?.toLowerCase();
-        if (!key || !stockedProductNames.has(key)) continue;
-        const remaining = remainingQty[key] || 0;
-        if (remaining <= 0) continue;
-        const creditQty = Math.min(item.quantity || 1, remaining);
-        remainingQty[key] -= creditQty;
-        const salePrice = stockedProductMap[key]?.salePrice || 0;
-        sessionRevenue += salePrice * creditQty;
-        creditedItems.push({ ...item, quantity: creditQty, salePrice });
-      }
-
-      if (creditedItems.length > 0) {
-        const sessionCommission = sessionRevenue * (stocker.commissionRate / 100);
-        unpaidAmount += sessionCommission;
-        unpaidDeliveries.push({
-          roomId: session.roomId,
-          robloxUsername: session.robloxUsername,
-          game: session.game,
-          orderRef: session.orderRef,
-          agentName: session.assignedAgent?.name || "Unknown",
-          deliveredAt: session.resolvedAt,
-          items: creditedItems,
-          revenue: sessionRevenue,
-          commission: sessionCommission,
-        });
-      }
-    }
-
-    unpaidDeliveries.sort((a, b) => new Date(b.deliveredAt) - new Date(a.deliveredAt));
-  }
+  const unpaidData = await getUnpaidSaleAllocations(stocker);
 
   const payouts = await StockerPayout.find({ stocker: stocker._id }).sort({ createdAt: -1 });
   const totalPaid = payouts.reduce((sum, p) => sum + p.amount, 0);
@@ -321,12 +194,54 @@ exports.getMyPayouts = catchAsync(async (req, res) => {
         cryptoNetwork: stocker.cryptoNetwork,
       },
       payouts,
-      unpaidAmount,
-      unpaidDeliveries,
+      unpaidAmount: unpaidData.unpaidAmount,
+      unpaidDeliveries: unpaidData.deliveries,
       totalPaid,
     },
   });
 });
+
+async function getUnpaidSaleAllocations(stocker) {
+  const paidPayouts = await StockerPayout.find({ stocker: stocker._id }).select("saleAllocations").lean();
+  const paidBySale = new Map();
+  for (const payout of paidPayouts) {
+    for (const allocation of payout.saleAllocations || []) {
+      const key = `${allocation.sale}:${allocation.allocationIndex}`;
+      paidBySale.set(key, (paidBySale.get(key) || 0) + allocation.amount);
+    }
+  }
+
+  const sales = await StockSale.find({
+    deliveredAt: { $exists: true },
+    "allocations.stocker": stocker._id,
+  }).sort({ deliveredAt: 1 }).lean();
+  const deliveries = [];
+  let unpaidAmount = 0;
+
+  for (const sale of sales) {
+    sale.allocations.forEach((allocation, allocationIndex) => {
+      if (String(allocation.stocker) !== String(stocker._id)) return;
+      const revenue = allocation.unitRevenue * allocation.quantity;
+      const commission = revenue * (allocation.commissionRate / 100);
+      const paidAmount = paidBySale.get(`${sale._id}:${allocationIndex}`) || 0;
+      const remaining = Math.max(0, commission - paidAmount);
+      if (remaining <= 0.0001) return;
+      unpaidAmount += remaining;
+      deliveries.push({
+        saleId: String(sale._id),
+        allocationIndex,
+        roomId: sale.claimRoomId,
+        robloxUsername: sale.customer?.robloxUsername || "Customer",
+        orderRef: sale.orderNumber,
+        deliveredAt: sale.deliveredAt,
+        items: [{ name: sale.productName, quantity: allocation.quantity, salePrice: allocation.unitRevenue }],
+        revenue,
+        commission: remaining,
+      });
+    });
+  }
+  return { deliveries: deliveries.reverse(), unpaidAmount: Number(unpaidAmount.toFixed(2)) };
+}
 
 exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
   const stocker = req.stocker;
@@ -338,12 +253,9 @@ exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
 
   // Update product stock counts
   for (const item of request.items) {
-    if (item.product) {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: item.quantity, onHand: item.quantity },
-        outOfStock: false,
-      });
-    }
+    if (item.product) await addStock(item.product, item.quantity);
+    item.remainingQuantity = item.quantity;
+    item.soldQuantity = 0;
   }
 
   // Commission is based on store price, not the stocker's custom price
@@ -364,8 +276,6 @@ exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
 
   await Stocker.findByIdAndUpdate(stocker._id, {
     $inc: {
-      totalRevenue: storeBasedTotal,
-      totalCommission: commission,
       totalStocked: request.items.reduce((sum, i) => sum + (i.quantity || 1), 0),
     },
   });
