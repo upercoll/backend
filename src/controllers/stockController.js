@@ -48,11 +48,22 @@ async function getStockerLedgerTotals(stockerId) {
 exports.listStockers = catchAsync(async (req, res) => {
   const stockers = await Stocker.find({ active: true }).sort({ createdAt: -1 });
 
+  // The Stocker document's own `totalRevenue`/`totalCommission` fields are
+  // never written anywhere (only `totalStocked` is), so they always sit at
+  // their schema default of 0. The frontend's summary cards and per-stocker
+  // rows read `totalRevenue` / `totalCommissionOwed` straight off this list
+  // response, which meant they always displayed $0.00 no matter how much
+  // had actually sold. The real numbers only exist via
+  // getStockerLedgerTotals() (derived from StockSale + StockerPayout) — computing
+  // and attaching them here is what actually makes the tracking page correct.
   const enriched = await Promise.all(
     stockers.map(async (s) => {
-      const requestCount = await StockRequest.countDocuments({ stocker: s._id });
-      const stockedCount = await StockRequest.countDocuments({ stocker: s._id, status: "stocked" });
-      return { ...s.toObject(), requestCount, stockedCount };
+      const [requestCount, stockedCount, ledger] = await Promise.all([
+        StockRequest.countDocuments({ stocker: s._id }),
+        StockRequest.countDocuments({ stocker: s._id, status: "stocked" }),
+        getStockerLedgerTotals(s._id),
+      ]);
+      return { ...s.toObject(), requestCount, stockedCount, ...ledger };
     })
   );
 
