@@ -192,9 +192,22 @@ exports.approveRequest = catchAsync(async (req, res, next) => {
 
 exports.markStocked = catchAsync(async (req, res, next) => {
   const { adminNotes } = req.body;
-  const request = await StockRequest.findById(req.params.id).populate("stocker");
+  // Atomically flip approved -> stocked before touching inventory. Two
+  // concurrent "mark stocked" calls (double-click, or admin + stocker both
+  // acting on the same request) would otherwise both pass a plain status
+  // check and both call addStock — permanently double-adding real inventory
+  // and double-counting the stocker's commission. Only one caller can win
+  // this update; the loser gets null and a clean 400 instead of duplicating
+  // the stock.
+  const claimed = await StockRequest.findOneAndUpdate(
+    { _id: req.params.id, status: "approved" },
+    { $set: { status: "stocked" } },
+    { new: true }
+  );
+  if (!claimed) return next(new AppError("Request must be approved before marking as stocked", 400));
+
+  const request = await StockRequest.findById(claimed._id).populate("stocker");
   if (!request) return next(new AppError("Stock request not found", 404));
-  if (request.status !== "approved") return next(new AppError("Request must be approved before marking as stocked", 400));
 
   for (const item of request.items) {
     if (item.product) await addStock(item.product, item.quantity);
@@ -209,7 +222,6 @@ exports.markStocked = catchAsync(async (req, res, next) => {
   );
   const commission = (storeBasedTotal * (request.stocker?.commissionRate || 0)) / 100;
 
-  request.status = "stocked";
   request.stockedAt = new Date();
   request.stockedBy = req.panelUser?.email || "Admin";
   request.commission = commission;
@@ -448,6 +460,13 @@ exports.markStockerPaid = catchAsync(async (req, res, next) => {
     saleAllocations,
   });
 
+  // Nothing was actually setting this after a payout, so every subsequent
+  // payout's periodStart fell back to stocker.createdAt — every payout in a
+  // stocker's history displayed "period: [account creation] → today" instead
+  // of "since their last payout". The $ amounts were unaffected (those come
+  // from unpaid-allocation math, not from this date range) but the payout
+  // history shown to admins/stockers was wrong.
+  stocker.lastPayoutAt = periodEnd;
   await stocker.save();
 
   res.json({ success: true, data: { payout } });
