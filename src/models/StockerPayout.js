@@ -10,6 +10,11 @@ const stockerPayoutSchema = new mongoose.Schema(
       request: { type: mongoose.Schema.Types.ObjectId, ref: "StockRequest" },
       amount: { type: Number, required: true },
     }],
+    saleAllocations: [{
+      sale: { type: mongoose.Schema.Types.ObjectId, ref: "StockSale", required: true },
+      allocationIndex: { type: Number, required: true, min: 0 },
+      amount: { type: Number, required: true, min: 0 },
+    }],
     periodStart: { type: Date },
     periodEnd: { type: Date },
     notes: { type: String, trim: true, default: "" },
