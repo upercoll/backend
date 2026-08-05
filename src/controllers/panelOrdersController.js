@@ -4,12 +4,28 @@ const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const stripe = require("../config/stripe");
 const { sendCancellationEmail, sendRefundEmail } = require("../config/email");
+const {
+  addStock,
+  rollbackStockedBatchAllocations,
+  markOrderDelivered,
+} = require("../services/stockService");
 
 const VALID_STATUSES = ["pending", "paid", "delivering", "completed", "cancelled", "refunded", "partially_refunded"];
 
 function addTimeline(order, action, by, details) {
   if (!order.timeline) order.timeline = [];
   order.timeline.push({ action, by: by || "Admin", details, timestamp: new Date() });
+}
+
+async function restoreOrderInventory(order) {
+  const StockSale = require("../models/StockSale");
+  const allocations = await StockSale.countDocuments({ order: order._id });
+  if (!allocations) return false;
+  await rollbackStockedBatchAllocations(order._id);
+  for (const item of order.items || []) {
+    await addStock(item.product, item.quantity);
+  }
+  return true;
 }
 
 exports.listOrders = catchAsync(async (req, res) => {
@@ -132,6 +148,8 @@ async function performStatusUpdate(order, req) {
   if (status === "completed" && prevStatus !== "completed") {
     order.fulfilledAt = new Date();
     order.fulfilledBy = req.panelUser?.email || "Admin";
+    order.set("delivery.status", "delivered");
+    order.set("delivery.deliveredAt", new Date());
   }
 
   const by = req.panelUser?.email || "Admin";
@@ -141,6 +159,13 @@ async function performStatusUpdate(order, req) {
   addTimeline(order, `Status changed from "${prevStatus}" to "${status}"`, by, timelineDetails);
 
   await order.save();
+
+  if (status === "completed" && prevStatus !== "completed") {
+    await markOrderDelivered(order.orderNumber, "admin_manual");
+  }
+  if (status === "cancelled" && prevStatus !== "cancelled" && prevStatus !== "refunded") {
+    await restoreOrderInventory(order);
+  }
 
   // When an order is completed, auto-close any open claim session for it so the
   // customer's chat disappears from their end immediately.
@@ -233,20 +258,22 @@ exports.fulfillOrder = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
-  order.status = "completed";
-  order.fulfilledAt = new Date();
-  order.fulfilledBy = req.panelUser?.email || "Admin";
-
+  const wasCompleted = order.status === "completed";
   if (trackingNumber) order.delivery.trackingNumber = trackingNumber;
   if (carrier) order.delivery.carrier = carrier;
   if (notes) order.delivery.notes = notes;
-  order.delivery.status = "delivered";
-  order.delivery.deliveredAt = new Date();
-
   const by = req.panelUser?.email || "Admin";
   addTimeline(order, `Order marked as completed`, by, trackingNumber ? `Tracking: ${trackingNumber}` : undefined);
 
+  if (!wasCompleted) {
+    order.status = "completed";
+    order.fulfilledAt = new Date();
+    order.fulfilledBy = by;
+    order.set("delivery.status", "delivered");
+    order.set("delivery.deliveredAt", new Date());
+  }
   await order.save();
+  if (!wasCompleted) await markOrderDelivered(order.orderNumber, "admin_manual");
 
   // Auto-close any open claim session so the customer's chat disappears.
   try {
@@ -324,6 +351,9 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
   addTimeline(order, isPartial ? "Partial refund issued" : "Order refunded", by, details);
 
   await order.save();
+  if (!isPartial && restockItems) {
+    await restoreOrderInventory(order);
+  }
 
   try {
     await sendRefundEmail({
@@ -389,13 +419,27 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
     }
   }
 
-  const result = await Order.updateMany(
-    { _id: { $in: idList } },
-    {
-      $set: { status },
-      $push: { timeline: { action: `Bulk status update to "${status}"`, by: req.panelUser?.email || "Admin", timestamp: new Date() } },
-    }
-  );
+   const ordersToUpdate = await Order.find({ _id: { $in: idList } });
+   let modifiedCount = 0;
+   for (const order of ordersToUpdate) {
+     const previousStatus = order.status;
+     order.status = status;
+     addTimeline(order, `Bulk status update to "${status}"`, req.panelUser?.email || "Admin");
+     if (status === "completed" && previousStatus !== "completed") {
+       order.fulfilledAt = new Date();
+       order.fulfilledBy = req.panelUser?.email || "Admin";
+       order.set("delivery.status", "delivered");
+       order.set("delivery.deliveredAt", new Date());
+     }
+     await order.save();
+     if (status === "completed" && previousStatus !== "completed") {
+       await markOrderDelivered(order.orderNumber, "admin_bulk");
+     }
+     if (status === "cancelled" && previousStatus !== "cancelled" && previousStatus !== "refunded") {
+       await restoreOrderInventory(order);
+     }
+     modifiedCount++;
+   }
 
   // Auto-close any open claim sessions for bulk-completed orders.
   if (status === "completed") {
@@ -456,7 +500,7 @@ exports.bulkUpdateStatus = catchAsync(async (req, res, next) => {
     }
   }
 
-  res.json({ success: true, message: `Updated ${result.modifiedCount} orders`, data: { modified: result.modifiedCount } });
+   res.json({ success: true, message: `Updated ${modifiedCount} orders`, data: { modified: modifiedCount } });
 });
 
 exports.getClaimChat = catchAsync(async (req, res, next) => {
