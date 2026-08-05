@@ -130,32 +130,60 @@ function fireOrderConfirmationEmail(order) {
 }
 
 async function finalizePaidOrder(order) {
-  const decrementedItems = [];
-  for (const item of order.items) {
-    const product = await removeStock(item.product, item.quantity);
-    if (!product) {
-      await Promise.all(decrementedItems.map((previousItem) => addStock(previousItem.product, previousItem.quantity)));
-      throw new AppError(
-        `"${item.productSnapshot?.name || "Item"}" no longer has enough stock to fulfill this order`,
-        409
-      );
-    }
-    decrementedItems.push(item);
-  }
+  // Atomically claim this order for finalization. Stripe's webhook and the
+  // client-side confirmPayment call can both arrive for the same order at
+  // nearly the same time; without this guard both would pass the caller's
+  // "not already succeeded" check and each would independently decrement
+  // stock and allocate stocker batches for the same order — double-counting
+  // sales, overstating stocker commissions, and undercounting inventory.
+  // "processing" acts as a lock: only one caller can win this update.
+  const previousPaymentStatus = order.payment.status;
+  const claimed = await Order.findOneAndUpdate(
+    { _id: order._id, "payment.status": { $nin: ["succeeded", "processing"] } },
+    { $set: { "payment.status": "processing" } },
+    { new: true }
+  );
+  if (!claimed) return null; // already finalized, or a concurrent request is finalizing it right now
+  order = claimed;
 
+  const decrementedItems = [];
   try {
-    await allocateStockedBatches(order);
+    for (const item of order.items) {
+      const product = await removeStock(item.product, item.quantity);
+      if (!product) {
+        await Promise.all(decrementedItems.map((previousItem) => addStock(previousItem.product, previousItem.quantity)));
+        throw new AppError(
+          `"${item.productSnapshot?.name || "Item"}" no longer has enough stock to fulfill this order`,
+          409
+        );
+      }
+      decrementedItems.push(item);
+    }
+
+    try {
+      await allocateStockedBatches(order);
+    } catch (error) {
+      await Promise.all(decrementedItems.map((item) => addStock(item.product, item.quantity)));
+      await rollbackStockedBatchAllocations(order._id);
+      throw error;
+    }
   } catch (error) {
-    await Promise.all(decrementedItems.map((item) => addStock(item.product, item.quantity)));
-    await rollbackStockedBatchAllocations(order._id);
+    // Release the lock so a later retry (e.g. re-running syncStripePayments,
+    // or Stripe redelivering the webhook) can attempt finalization again
+    // instead of being stuck on "processing" forever.
+    await Order.updateOne({ _id: order._id }, { $set: { "payment.status": previousPaymentStatus } });
     throw error;
   }
+
   order.payment.status = "succeeded";
   order.payment.paidAt = new Date();
   order.status = "paid";
   order.set("delivery.status", "in_progress");
   await order.save();
+  return order;
 }
+
+exports.finalizePaidOrder = finalizePaidOrder;
 
 exports.createPaymentIntent = catchAsync(async (req, res, next) => {
   const { cartItems, customer, paymentMethodId, promoCode } = req.body;
@@ -267,9 +295,17 @@ exports.confirmPayment = catchAsync(async (req, res, next) => {
       });
     }
 
-    await finalizePaidOrder(order);
+    const finalizedOrder = await finalizePaidOrder(order);
+    if (!finalizedOrder) {
+      // A concurrent call (e.g. Stripe's webhook, arriving around the same
+      // moment) already finalized this order — don't process it again.
+      return res.json({
+        success: true,
+        data: { orderNumber: order.orderNumber, status: "succeeded", alreadyProcessed: true },
+      });
+    }
 
-    fireOrderConfirmationEmail(order);
+    fireOrderConfirmationEmail(finalizedOrder);
 
     return res.json({
       success: true,
@@ -356,9 +392,11 @@ exports.webhook = catchAsync(async (req, res, next) => {
     case "payment_intent.succeeded": {
       const order = await Order.findOne({ "payment.stripePaymentIntentId": intent.id });
       if (order && order.payment.status !== "succeeded") {
-        await finalizePaidOrder(order);
-        logger.info(`Order paid via webhook: ${order.orderNumber}`);
-        fireOrderConfirmationEmail(order);
+        const finalizedOrder = await finalizePaidOrder(order);
+        if (finalizedOrder) {
+          logger.info(`Order paid via webhook: ${order.orderNumber}`);
+          fireOrderConfirmationEmail(finalizedOrder);
+        }
       }
       break;
     }
