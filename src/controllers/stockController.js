@@ -10,7 +10,7 @@ const { sendInviteEmail } = require("../config/email");
 const { addStock, removeStockForDeletedRequest } = require("../services/stockService");
 const money = (value) => Number((Number(value) || 0).toFixed(2));
 
-async function getStockerLedgerTotals(stockerId) {
+async function getStockerLedgerTotals(stockerId, stocker) {
   const [sales, payouts] = await Promise.all([
     StockSale.find({ deliveredAt: { $exists: true }, "allocations.stocker": stockerId })
       .select("allocations")
@@ -24,8 +24,16 @@ async function getStockerLedgerTotals(stockerId) {
       paidByAllocation.set(key, money((paidByAllocation.get(key) || 0) + allocation.amount));
     }
   }
-  let totalRevenue = 0;
-  let totalCommissionEarned = 0;
+  // Historical baseline: this stocker's revenue/commission from before StockSale-based
+  // tracking existed. These values live on the Stocker document itself and are real,
+  // pre-existing earnings — they must be added to (not replaced by) what the StockSale
+  // ledger tracks going forward, or every stocker's history predating this ledger
+  // disappears from the dashboard even though nothing was actually paid out for it.
+  const baselineRevenue = money(stocker?.totalRevenue);
+  const baselineCommission = money(stocker?.totalCommission);
+
+  let totalRevenue = baselineRevenue;
+  let totalCommissionEarned = baselineCommission;
   let totalCommissionPaid = 0;
   for (const sale of sales) {
     sale.allocations.forEach((allocation, allocationIndex) => {
@@ -61,7 +69,7 @@ exports.listStockers = catchAsync(async (req, res) => {
       const [requestCount, stockedCount, ledger] = await Promise.all([
         StockRequest.countDocuments({ stocker: s._id }),
         StockRequest.countDocuments({ stocker: s._id, status: "stocked" }),
-        getStockerLedgerTotals(s._id),
+        getStockerLedgerTotals(s._id, s),
       ]);
       return { ...s.toObject(), requestCount, stockedCount, ...ledger };
     })
@@ -93,7 +101,7 @@ exports.getStockerDetail = catchAsync(async (req, res, next) => {
   ]);
   const totalStockedLive = stockedAgg[0]?.total || 0;
 
-  const ledger = await getStockerLedgerTotals(stocker._id);
+  const ledger = await getStockerLedgerTotals(stocker._id, stocker);
   const stats = {
     totalRequests: requests.length,
     pendingRequests: requests.filter((r) => r.status === "pending").length,
