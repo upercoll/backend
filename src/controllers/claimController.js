@@ -104,25 +104,30 @@ async function enrichItemsFromOrder(order) {
   const productIds = items.map(i => i.product).filter(Boolean);
   const products = productIds.length
     ? await Product.find({ _id: { $in: productIds } })
-        .select("category")
+        .select("name game category")
         .populate("category", "name")
         .lean()
     : [];
-  const categoryByProduct = new Map(products.map(p => [String(p._id), p.category?.name || null]));
+  const productByMap = new Map(products.map(p => [String(p._id), p]));
 
   const enriched = items.map(i => {
-    const name = i.productSnapshot?.name || "";
-    const category = i.product ? categoryByProduct.get(String(i.product)) || null : null;
+    const product = i.product ? productByMap.get(String(i.product)) : null;
+    // Prefer the snapshot taken at checkout; fall back to the live product
+    // for older orders that predate productSnapshot.
+    const name = i.productSnapshot?.name || product?.name || "";
+    const game = i.productSnapshot?.game || product?.game || null;
+    const category = i.product ? (product?.category?.name || null) : null;
     return {
       name,
       quantity: i.quantity || 1,
       ...(category ? { category } : {}),
+      ...(game ? { game } : {}),
     };
   });
 
   return {
     items: enriched.filter(i => i.name && !isGenericName(i.name)),
-    game: items[0]?.productSnapshot?.game || null,
+    game: items[0]?.productSnapshot?.game || enriched[0]?.game || null,
   };
 }
 
@@ -553,19 +558,17 @@ exports.createAutoDelivery = catchAsync(async (req, res, next) => {
   }
 
   // ── Create the auto session ────────────────────────────────────────────
-  let autoCfg = { enabled: false, privateServerUrl: null, instructions: null };
-  if (resolvedGame) {
-    try {
-      const Game = require("../models/Game");
-      const gameDoc = await Game.findOne({ slug: String(resolvedGame).toLowerCase() }).select("autoDelivery");
-      if (gameDoc?.autoDelivery?.enabled) autoCfg = {
-        enabled: true,
-        privateServerUrl: gameDoc.autoDelivery.privateServerUrl || null,
-        instructions: gameDoc.autoDelivery.instructions || null,
-      };
-    } catch {}
+  // ── Game guard: automated delivery is only available for auto-only games ──
+  if (!resolvedGame || !isAutoOnlyGame(resolvedGame)) {
+    return next(
+      new AppError(
+        "Automated delivery is only available for Grow A Garden 2 orders. Please use the Claim Chat to connect with a delivery agent.",
+        400
+      )
+    );
   }
 
+  // ── Create the auto session ────────────────────────────────────────────
   const roomId = uuidv4();
   const session = await ClaimSession.create({
     roomId,
@@ -577,10 +580,6 @@ exports.createAutoDelivery = catchAsync(async (req, res, next) => {
     mode: "auto",
     itemName: resolvedItemName,
     items: resolvedItems,
-    autoDelivery: {
-      privateServerUrl: autoCfg.privateServerUrl || undefined,
-      instructions: autoCfg.instructions || undefined,
-    },
     messages: [
       { sender: "system", text: `${robloxUsername.trim()} started automated delivery`, senderName: "System" },
     ],
