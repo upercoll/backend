@@ -835,9 +835,11 @@ exports.deliverAutoSession = catchAsync(async (req, res, next) => {
   // Release ALL reservations held by this account — whatever it did not
   // confirm as delivered goes back into the pool for other accounts
   // (e.g. the account does not own the item, or hit the recipient gift limit).
+  // Claim stores reservations with account = "<name>:<timestamp>", so match
+  // both the plain name and the token form.
   if (session.autoDelivery?.reservations?.length) {
     session.autoDelivery.reservations = session.autoDelivery.reservations.filter(
-      r => r.account !== account
+      r => r.account !== account && !(typeof r.account === "string" && r.account.startsWith(account + ":"))
     );
   }
 
