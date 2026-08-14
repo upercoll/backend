@@ -33,6 +33,11 @@ const gameSchema = new mongoose.Schema(
       to: { type: String },
       minutes: { type: Number, default: 0 },
     }],
+    autoDelivery: {
+      enabled: { type: Boolean, default: false },
+      privateServerUrl: { type: String, trim: true },
+      instructions: { type: String, trim: true },
+    },
   },
   { timestamps: true }
 );

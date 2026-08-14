@@ -26,9 +26,11 @@ function canHandleGame(deliverer, game) {
 exports.getClaims = catchAsync(async (req, res) => {
   const delivererId = req.deliverer._id;
   const delivererGames = getAssignedGames(req.deliverer);
+  const { mode } = req.query;
 
   // Filter pending queue by assigned games (same logic as claim agent queue)
   const pendingFilter = { status: "pending" };
+  if (mode === "auto" || mode === "manual") pendingFilter.mode = mode;
   if (delivererGames.length > 0) {
     pendingFilter.$or = [
       { game: { $in: delivererGames } },
@@ -43,13 +45,18 @@ exports.getClaims = catchAsync(async (req, res) => {
       .sort({ createdAt: 1 })
       .limit(50)
       .select("-messages -__v"),
-    ClaimSession.find({ status: "active", "delivererAssigned.delivererId": delivererId })
+    ClaimSession.find({
+      status: "active",
+      "delivererAssigned.delivererId": delivererId,
+      ...(mode === "auto" || mode === "manual" ? { mode } : {}),
+    })
       .sort({ createdAt: -1 })
       .limit(20)
       .select("-__v"),
     ClaimSession.find({
       status: { $in: ["claimed", "ended"] },
       "delivererAssigned.delivererId": delivererId,
+      ...(mode === "auto" || mode === "manual" ? { mode } : {}),
     })
       .sort({ resolvedAt: -1 })
       .select("-messages -__v"),

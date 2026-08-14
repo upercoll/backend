@@ -105,6 +105,19 @@ exports.updateGame = catchAsync(async (req, res, next) => {
     } catch {}
   }
 
+  if (req.body.autoDelivery !== undefined) {
+    try {
+      const parsed = typeof req.body.autoDelivery === "string" ? JSON.parse(req.body.autoDelivery) : req.body.autoDelivery;
+      if (parsed && typeof parsed === "object") {
+        game.autoDelivery = {
+          enabled: !!parsed.enabled,
+          privateServerUrl: (parsed.privateServerUrl || "").trim() || undefined,
+          instructions: (parsed.instructions || "").trim() || undefined,
+        };
+      }
+    } catch {}
+  }
+
   if (bgImageUrl !== undefined) {
     game.bgImageUrl = bgImageUrl || undefined;
   }

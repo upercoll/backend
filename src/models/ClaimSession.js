@@ -15,6 +15,18 @@ const claimItemSchema = new mongoose.Schema(
     itemId: { type: String },
     name: { type: String, required: true },
     quantity: { type: Number, default: 1 },
+    category: { type: String, trim: true },
+    delivered: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const claimReservationSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true },
+    quantity: { type: Number, required: true },
+    account: { type: String, default: "AUTO BOT" },
+    claimedAt: { type: Date, default: Date.now },
   },
   { _id: false }
 );
@@ -24,10 +36,23 @@ const claimSessionSchema = new mongoose.Schema(
     roomId: { type: String, required: true, unique: true, index: true },
 
     robloxUsername: { type: String, required: true, trim: true },
+    robloxUserId: { type: String, trim: true },
     contactEmail: { type: String, required: true, trim: true, lowercase: true },
 
     orderRef: { type: String, trim: true },
     game: { type: String, trim: true },
+
+    mode: {
+      type: String,
+      enum: ["manual", "auto"],
+      default: "manual",
+    },
+
+    autoDelivery: {
+      privateServerUrl: { type: String, trim: true },
+      instructions: { type: String, trim: true },
+      reservations: [claimReservationSchema],
+    },
 
     items: [claimItemSchema],
 
