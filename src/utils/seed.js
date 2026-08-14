@@ -9,7 +9,7 @@ const logger = require("./logger");
 const games = [
   { name: "Murder Mystery 2", slug: "murder-mystery-2", gradient: { from: "#dc2626", to: "#7c3aed" } },
   { name: "Blox Fruits",       slug: "blox-fruits",       gradient: { from: "#d97706", to: "#fbbf24" } },
-  { name: "Grow A Garden",     slug: "grow-a-garden",     gradient: { from: "#16a34a", to: "#4ade80" } },
+  { name: "Grow A Garden",     slug: "grow-a-garden-2",     gradient: { from: "#16a34a", to: "#4ade80" } },
   { name: "Blade Ball",        slug: "blade-ball",        gradient: { from: "#4f46e5", to: "#7c3aed" } },
 ];
 
@@ -20,8 +20,8 @@ const categoryDefs = [
   { game: "murder-mystery-2", name: "Bundles",    slug: "bundles",    icon: "Package",  subs: ["Value", "Premium"] },
   { game: "blox-fruits",      name: "Fruits",     slug: "fruits",     icon: "Apple",    subs: ["Mythical", "Legendary", "Rare"] },
   { game: "blox-fruits",      name: "Sword",      slug: "swords",     icon: "Sword",    subs: ["Dragon", "Legendary"] },
-  { game: "grow-a-garden",    name: "Seeds",      slug: "seeds",      icon: "Sprout",   subs: ["Legendary", "Rare", "Common"] },
-  { game: "grow-a-garden",    name: "Tools",      slug: "tools",      icon: "Wrench",   subs: ["Watering", "Harvest"] },
+  { game: "grow-a-garden-2",    name: "Seeds",      slug: "seeds",      icon: "Sprout",   subs: ["Legendary", "Rare", "Common"] },
+  { game: "grow-a-garden-2",    name: "Tools",      slug: "tools",      icon: "Wrench",   subs: ["Watering", "Harvest"] },
   { game: "blade-ball",       name: "Swords",     slug: "swords-bb",  icon: "Sword",    subs: ["Rare", "Epic", "Common"] },
 ];
 
@@ -33,8 +33,8 @@ const sampleProducts = [
   { name: "Chroma Scythe",      game: "murder-mystery-2", catSlug: "knives", price: 24.99, originalPrice: 34.99, gradient: { from: "#ec4899", to: "#be185d" }, featured: true },
   { name: "Dragon Fruit",       game: "blox-fruits",      catSlug: "fruits", price: 12.99, originalPrice: 18.99, gradient: { from: "#dc2626", to: "#ea580c" }, bestSeller: true },
   { name: "Leopard Fruit",      game: "blox-fruits",      catSlug: "fruits", price: 19.99, originalPrice: 28.99, gradient: { from: "#d97706", to: "#b45309" }, featured: true },
-  { name: "Legendary Seed",     game: "grow-a-garden",    catSlug: "seeds",  price: 5.99,  originalPrice: 8.99,  gradient: { from: "#16a34a", to: "#065f46" } },
-  { name: "Golden Watering Can",game: "grow-a-garden",    catSlug: "tools",  price: 9.99,  gradient: { from: "#d97706", to: "#b45309" }, featured: true },
+  { name: "Legendary Seed",     game: "grow-a-garden-2",    catSlug: "seeds",  price: 5.99,  originalPrice: 8.99,  gradient: { from: "#16a34a", to: "#065f46" } },
+  { name: "Golden Watering Can",game: "grow-a-garden-2",    catSlug: "tools",  price: 9.99,  gradient: { from: "#d97706", to: "#b45309" }, featured: true },
 ];
 
 async function seed() {

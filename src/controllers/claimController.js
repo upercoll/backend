@@ -15,7 +15,7 @@ function tryGetIO() {
   }
 }
 
-const AUTO_ONLY_GAMES = ["grow-a-garden"];
+const AUTO_ONLY_GAMES = ["grow-a-garden-2"];
 function isAutoOnlyGame(game) {
   return !!game && AUTO_ONLY_GAMES.includes(String(game).trim().toLowerCase());
 }
