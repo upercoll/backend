@@ -744,7 +744,17 @@ exports.claimAutoSession = catchAsync(async (req, res, next) => {
     return res.json({ success: true, data: { roomId: session.roomId, status: session.status } });
   }
 
-  const reservations = (session.autoDelivery?.reservations || []).slice();
+  // Reservations older than the TTL are treated as stale (the claiming bot
+  // crashed or gave up without reporting). They are freed so other bot
+  // accounts can take over the order instead of blocking it forever.
+  const RESERVATION_TTL_MS = 10 * 60 * 1000;
+  const now = Date.now();
+  const allReservations = (session.autoDelivery?.reservations || []).slice();
+  const reservations = allReservations.filter(r => {
+    const t = r.claimedAt ? new Date(r.claimedAt).getTime() : 0;
+    return now - t < RESERVATION_TTL_MS;
+  });
+  const staleCount = allReservations.length - reservations.length;
   const reservedOf = name =>
     reservations.reduce((sum, r) => (r.name === name ? sum + (r.quantity || 0) : sum), 0);
 
@@ -756,7 +766,7 @@ exports.claimAutoSession = catchAsync(async (req, res, next) => {
     const remaining = (item.quantity || 1) - (item.delivered || 0);
     const qty = Math.min(Math.floor(Number(it.quantity)), Math.max(0, remaining - reservedOf(item.name)));
     if (qty <= 0) continue;
-    reservations.push({ name: item.name, quantity: qty, account: token });
+    reservations.push({ name: item.name, quantity: qty, account: token, claimedAt: new Date() });
     granted.push({ name: item.name, quantity: qty });
   }
 
@@ -769,6 +779,18 @@ exports.claimAutoSession = catchAsync(async (req, res, next) => {
   session.status = "active";
   session.delivererAssigned = { name: account, claimedAt: new Date() };
   await session.save();
+
+  if (staleCount > 0) {
+    await logBot({
+      roomId: session.roomId,
+      orderRef: session.orderRef,
+      robloxUsername: session.robloxUsername,
+      game: session.game,
+      account,
+      action: "info",
+      message: `Freed ${staleCount} stale reservation(s) older than the 10min TTL (crashed bot took them over)`,
+    });
+  }
 
   await logBot({
     roomId: session.roomId,
