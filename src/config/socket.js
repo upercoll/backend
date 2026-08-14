@@ -664,23 +664,27 @@ function notifyNewClaim(sessionData) {
   if (!io) return;
   const game = sessionData.game;
 
-  let agents = getAgentsForGame(game);
+  // Automated delivery sessions are handled by the bot (Grow A Garden 2
+  // only) — agents are never pinged for them.
+  if (sessionData.mode !== "auto") {
+    let agents = getAgentsForGame(game);
 
-  if (agents.length === 0) {
-    agents = [...agentSockets.values()];
-    logger.info(`No agents for game "${game}", falling back to all ${agents.length} available agents`);
-  }
-
-  if (agents.length > 0) {
-    for (const socketId of agents) {
-      const targetSocket = io.sockets.sockets.get(socketId);
-      if (targetSocket) {
-        targetSocket.emit("queue:new_pending_claim", sessionData);
-      }
+    if (agents.length === 0) {
+      agents = [...agentSockets.values()];
+      logger.info(`No agents for game "${game}", falling back to all ${agents.length} available agents`);
     }
-    logger.info(`Notified ${agents.length} agents of new claim ${sessionData.roomId}`);
-  } else {
-    logger.info(`No agents online for claim ${sessionData.roomId}`);
+
+    if (agents.length > 0) {
+      for (const socketId of agents) {
+        const targetSocket = io.sockets.sockets.get(socketId);
+        if (targetSocket) {
+          targetSocket.emit("queue:new_pending_claim", sessionData);
+        }
+      }
+      logger.info(`Notified ${agents.length} agents of new claim ${sessionData.roomId}`);
+    } else {
+      logger.info(`No agents online for claim ${sessionData.roomId}`);
+    }
   }
 
   io.to("admin-room").emit("admin:new_claim", sessionData);

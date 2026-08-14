@@ -26,11 +26,17 @@ function canHandleGame(deliverer, game) {
 exports.getClaims = catchAsync(async (req, res) => {
   const delivererId = req.deliverer._id;
   const delivererGames = getAssignedGames(req.deliverer);
+  // Deliverers handle manual claims only — automated delivery sessions are
+  // handled exclusively by the delivery bot (Grow A Garden 2), so they are
+  // excluded from the agent queue unless a mode filter is explicitly passed.
   const { mode } = req.query;
+  const modeFilter =
+    mode === "auto" || mode === "manual"
+      ? { mode }
+      : { $or: [{ mode: "manual" }, { mode: { $exists: false } }] };
 
   // Filter pending queue by assigned games (same logic as claim agent queue)
-  const pendingFilter = { status: "pending" };
-  if (mode === "auto" || mode === "manual") pendingFilter.mode = mode;
+  const pendingFilter = { status: "pending", ...modeFilter };
   if (delivererGames.length > 0) {
     pendingFilter.$or = [
       { game: { $in: delivererGames } },
@@ -48,7 +54,7 @@ exports.getClaims = catchAsync(async (req, res) => {
     ClaimSession.find({
       status: "active",
       "delivererAssigned.delivererId": delivererId,
-      ...(mode === "auto" || mode === "manual" ? { mode } : {}),
+      ...modeFilter,
     })
       .sort({ createdAt: -1 })
       .limit(20)
@@ -56,7 +62,7 @@ exports.getClaims = catchAsync(async (req, res) => {
     ClaimSession.find({
       status: { $in: ["claimed", "ended"] },
       "delivererAssigned.delivererId": delivererId,
-      ...(mode === "auto" || mode === "manual" ? { mode } : {}),
+      ...modeFilter,
     })
       .sort({ resolvedAt: -1 })
       .select("-messages -__v"),

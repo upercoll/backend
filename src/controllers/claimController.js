@@ -413,7 +413,7 @@ exports.createClaim = catchAsync(async (req, res, next) => {
     contactEmail: emailLower,
     orderRef: resolvedOrderRef,
     game: resolvedGame || game?.trim() || null,
-    mode: req.body.mode === "auto" ? "auto" : "manual",
+    mode: "manual",
     itemName: resolvedItemName,
     items: resolvedItems,
     messages: initMessages,
@@ -612,7 +612,6 @@ exports.createAutoDelivery = catchAsync(async (req, res, next) => {
       items: session.items || [],
       game: session.game || null,
       orderRef: session.orderRef,
-      autoDelivery: autoCfg,
     },
   });
 });
@@ -672,9 +671,16 @@ function mapAutoSession(s) {
 }
 
 exports.getAutoQueue = catchAsync(async (req, res, next) => {
+  // Automated delivery exists ONLY for auto-only games (Grow A Garden 2).
+  // The queue is hard-locked to those games regardless of the query param,
+  // so the bot can never be pointed at another game's orders.
   const game = req.query.game?.trim()?.toLowerCase();
-  const filter = { mode: "auto", status: { $in: ["pending", "active"] } };
-  if (game) filter.game = game;
+  const filter = {
+    mode: "auto",
+    status: { $in: ["pending", "active"] },
+    game: { $in: AUTO_ONLY_GAMES },
+  };
+  if (game && AUTO_ONLY_GAMES.includes(game)) filter.game = game;
 
   const sessions = await ClaimSession.find(filter)
     .sort({ createdAt: 1 })
@@ -704,6 +710,9 @@ exports.claimAutoSession = catchAsync(async (req, res, next) => {
     status: { $in: ["pending", "active"] },
   });
   if (!session) return next(new AppError("Auto session not found or already claimed", 409));
+  if (session.game && !isAutoOnlyGame(session.game)) {
+    return next(new AppError("Automated delivery is only available for Grow A Garden 2", 403));
+  }
 
   const account = String(req.body?.account || "AUTO BOT").slice(0, 60);
   const requested = (req.body?.items || []).filter(
@@ -815,6 +824,9 @@ exports.deliverAutoSession = catchAsync(async (req, res, next) => {
     status: "active",
   });
   if (!session) return next(new AppError("Auto session not found or not active", 409));
+  if (session.game && !isAutoOnlyGame(session.game)) {
+    return next(new AppError("Automated delivery is only available for Grow A Garden 2", 403));
+  }
 
   const reported = (req.body?.items || []).filter(
     i => typeof i?.name === "string" && i.name.trim() && Number(i.quantity) > 0
@@ -1190,13 +1202,22 @@ exports.getAgentQueue = catchAsync(async (req, res) => {
   const agentId = panelUser?._id || panelUser?.id;
   const agentGames = panelUser?.claimGames || [];
 
-  const pendingFilter = { status: "pending" };
+  // Automated delivery sessions (Grow A Garden 2) are handled exclusively by
+  // the bot — they never appear in the agents' manual queue. Manual = the
+  // session has no mode at all (legacy) or mode "manual".
+  const manualModes = [
+    { mode: "manual" },
+    { mode: { $exists: false } },
+  ];
+  const pendingFilter = { status: "pending", $or: manualModes };
   if (agentGames.length > 0) {
+    const manualFor = gameCond =>
+      manualModes.map(m => ({ ...m, ...gameCond }));
     pendingFilter.$or = [
-      { game: { $in: agentGames } },
-      { game: null },
-      { game: { $exists: false } },
-      { game: "" },
+      ...manualFor({ game: { $in: agentGames } }),
+      ...manualFor({ game: null }),
+      ...manualFor({ game: { $exists: false } }),
+      ...manualFor({ game: "" }),
     ];
   }
 
