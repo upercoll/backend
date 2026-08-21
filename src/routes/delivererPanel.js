@@ -41,6 +41,7 @@ router.use(delivererAuth);
 
 router.get("/auth/me", authCtrl.me);
 router.get("/stats", panelCtrl.getStats);
+router.get("/payouts", panelCtrl.getPayouts);
 router.get("/claims", panelCtrl.getClaims);
 router.get("/claims/:roomId", panelCtrl.getSession);
 router.post("/claims/:roomId/claim", panelCtrl.claimSession);
