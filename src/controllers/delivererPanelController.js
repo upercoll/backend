@@ -1,5 +1,6 @@
 const ClaimSession = require("../models/ClaimSession");
 const DeliveryRecord = require("../models/DeliveryRecord");
+const DelivererPayout = require("../models/DelivererPayout");
 const Deliverer = require("../models/Deliverer");
 const Order = require("../models/Order");
 const AppError = require("../utils/AppError");
@@ -325,10 +326,31 @@ exports.getOrderByRef = catchAsync(async (req, res, next) => {
   res.json({ success: true, data: order });
 });
 
+// Record-level amounts are the source of truth for partial payouts — mirrors
+// the calculation used in deliverersAdminController so both panels agree.
+function calculateUnpaidDeliveryTotals(records) {
+  return records.reduce(
+    (totals, record) => {
+      const commissionDue = Math.max(0, (record.commission || 0) - (record.paidAmount || 0));
+      if (commissionDue <= 0) return totals;
+      totals.commission += commissionDue;
+      totals.revenue += (record.orderTotal || 0) * (commissionDue / (record.commission || 1));
+      totals.count += 1;
+      return totals;
+    },
+    { commission: 0, revenue: 0, count: 0 }
+  );
+}
+
 // GET /api/deliverer/stats
 exports.getStats = catchAsync(async (req, res) => {
   const deliverer = req.deliverer;
-  const records = await DeliveryRecord.find({ deliverer: deliverer._id }).sort({ deliveredAt: -1 }).limit(50);
+  const [records, unpaidRecords] = await Promise.all([
+    DeliveryRecord.find({ deliverer: deliverer._id }).sort({ deliveredAt: -1 }).limit(50),
+    DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false }),
+  ]);
+
+  const unpaidTotals = calculateUnpaidDeliveryTotals(unpaidRecords);
 
   res.json({
     success: true,
@@ -338,8 +360,8 @@ exports.getStats = catchAsync(async (req, res) => {
         email: deliverer.email,
         commissionRate: deliverer.commissionRate,
         assignments: deliverer.assignments || [],
-        totalRevenue: deliverer.totalRevenue,
-        totalCommission: deliverer.totalCommission,
+        totalRevenue: Number(unpaidTotals.revenue.toFixed(2)),
+        totalCommission: Number(unpaidTotals.commission.toFixed(2)),
         totalDelivered: deliverer.totalDelivered,
         lifetimeRevenue: deliverer.lifetimeRevenue,
         lifetimeCommission: deliverer.lifetimeCommission,
@@ -348,4 +370,15 @@ exports.getStats = catchAsync(async (req, res) => {
       recentDeliveries: records,
     },
   });
+});
+
+// GET /api/deliverer/payouts — this deliverer's own payout history
+exports.getPayouts = catchAsync(async (req, res) => {
+  const deliverer = req.deliverer;
+  const payouts = await DelivererPayout.find({ deliverer: deliverer._id })
+    .sort({ createdAt: -1 })
+    .select("-records -markedPaidBy"); // deliverers don't need internal record ids or which admin paid them
+  const totalPaid = Number(payouts.reduce((sum, p) => sum + (p.amount || 0), 0).toFixed(2));
+
+  res.json({ success: true, data: { payouts, totalPaid } });
 });
