@@ -49,16 +49,23 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
   const deliverer = await Deliverer.findById(req.params.id);
   if (!deliverer) return next(new AppError("Deliverer not found", 404));
 
+  // Page through delivery records instead of hard-capping them, so nothing
+  // is ever hidden — just paginated. `page`/`limit` come from the query
+  // string, defaulting to page 1 / 20 per page.
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  const skip = (page - 1) * limit;
+
   // IMPORTANT: the unpaid total must be computed from EVERY unpaid record,
-  // not just a capped/recent slice — a deliverer with more than 100 total
-  // deliveries could have unpaid records older than the most recent 100,
-  // which would silently get excluded from what they're owed. We run two
-  // separate queries: one unlimited (for the money math) and one capped
-  // (purely for the "recent deliveries" table the UI shows).
-  const [totalDeliveries, unpaidRecords, recentRecords] = await Promise.all([
+  // not a paginated slice — a deliverer with lots of deliveries could have
+  // unpaid records outside whatever page is currently being viewed, which
+  // would silently get excluded from what they're owed. So the money math
+  // always runs over the full unpaid set, completely separate from the
+  // paginated records returned for the table.
+  const [totalDeliveries, unpaidRecords, pageRecords] = await Promise.all([
     DeliveryRecord.countDocuments({ deliverer: deliverer._id }),
     DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false }),
-    DeliveryRecord.find({ deliverer: deliverer._id }).sort({ deliveredAt: -1 }).limit(100),
+    DeliveryRecord.find({ deliverer: deliverer._id }).sort({ deliveredAt: -1 }).skip(skip).limit(limit),
   ]);
 
   const unpaidTotals = calculateUnpaidDeliveryTotals(unpaidRecords);
@@ -75,7 +82,15 @@ exports.getDelivererDetail = catchAsync(async (req, res, next) => {
     lifetimeCommission: deliverer.lifetimeCommission,
   };
 
-  res.json({ success: true, data: { deliverer: delivererData, records: recentRecords, stats } });
+  res.json({
+    success: true,
+    data: {
+      deliverer: delivererData,
+      records: pageRecords,
+      stats,
+      pagination: { page, limit, total: totalDeliveries, pages: Math.max(1, Math.ceil(totalDeliveries / limit)) },
+    },
+  });
 });
 
 // GET /admin/deliverers/:id/payouts — payout history for a deliverer
