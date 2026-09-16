@@ -188,6 +188,7 @@ router.delete("/stock/stockers/:id", requirePermission("manage_stockers"), stock
 router.get("/admin/deliverers", requirePermission(["view_deliverers", "manage_deliverers"]), deliverersCtrl.listDeliverers);
 router.post("/admin/deliverers/invite", requirePermission("manage_deliverers"), deliverersCtrl.inviteDeliverer);
 router.get("/admin/deliverers/:id", requirePermission(["view_deliverers", "manage_deliverers"]), deliverersCtrl.getDelivererDetail);
+router.get("/admin/deliverers/:id/payouts", requirePermission(["view_deliverers", "manage_deliverers"]), deliverersCtrl.getDelivererPayouts);
 router.patch("/admin/deliverers/:id", requirePermission("manage_deliverers"), deliverersCtrl.updateDeliverer);
 router.post("/admin/deliverers/:id/mark-paid", requirePermission("manage_deliverers"), deliverersCtrl.markPaid);
 router.delete("/admin/deliverers/:id", ownerOnly, deliverersCtrl.deleteDeliverer);
