@@ -5,7 +5,7 @@ const Deliverer = require("../models/Deliverer");
 const AppError = require("../utils/AppError");
 const authCtrl = require("../controllers/delivererAuthController");
 const panelCtrl = require("../controllers/delivererPanelController");
-const { upload } = require("../config/cloudinary");
+const { upload } = require("../config/r2");
 
 async function delivererAuth(req, res, next) {
   try {

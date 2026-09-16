@@ -1,7 +1,7 @@
 const Game = require("../models/Game");
 const Category = require("../models/Category");
 const Product = require("../models/Product");
-const { uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
@@ -46,18 +46,18 @@ exports.createGame = catchAsync(async (req, res, next) => {
   let imageUrl, imagePublicId, bannerUrl, bannerPublicId;
 
   if (req.files?.image?.[0]) {
-    const result = await uploadToCloudinary(req.files.image[0].buffer, {
+    const result = await uploadToR2(req.files.image[0].buffer, {
       folder: "rbstars/games",
-      transformation: [{ width: 400, height: 400, crop: "fill" }],
+      originalName: req.files.image[0].originalname,
     });
     imageUrl = result.secure_url;
     imagePublicId = result.public_id;
   }
 
   if (req.files?.banner?.[0]) {
-    const result = await uploadToCloudinary(req.files.banner[0].buffer, {
+    const result = await uploadToR2(req.files.banner[0].buffer, {
       folder: "rbstars/banners",
-      transformation: [{ width: 1200, height: 400, crop: "fill" }],
+      originalName: req.files.banner[0].originalname,
     });
     bannerUrl = result.secure_url;
     bannerPublicId = result.public_id;
@@ -110,20 +110,20 @@ exports.updateGame = catchAsync(async (req, res, next) => {
   }
 
   if (req.files?.image?.[0]) {
-    await deleteFromCloudinary(game.imagePublicId);
-    const result = await uploadToCloudinary(req.files.image[0].buffer, {
+    await deleteFromR2(game.imagePublicId);
+    const result = await uploadToR2(req.files.image[0].buffer, {
       folder: "rbstars/games",
-      transformation: [{ width: 400, height: 400, crop: "fill" }],
+      originalName: req.files.image[0].originalname,
     });
     game.imageUrl = result.secure_url;
     game.imagePublicId = result.public_id;
   }
 
   if (req.files?.banner?.[0]) {
-    await deleteFromCloudinary(game.bannerPublicId);
-    const result = await uploadToCloudinary(req.files.banner[0].buffer, {
+    await deleteFromR2(game.bannerPublicId);
+    const result = await uploadToR2(req.files.banner[0].buffer, {
       folder: "rbstars/banners",
-      transformation: [{ width: 1200, height: 400, crop: "fill" }],
+      originalName: req.files.banner[0].originalname,
     });
     game.bannerUrl = result.secure_url;
     game.bannerPublicId = result.public_id;
@@ -142,8 +142,8 @@ exports.deleteGame = catchAsync(async (req, res, next) => {
     return next(new AppError(`Cannot delete game with ${productCount} active products. Remove them first.`, 400));
   }
 
-  if (game.imagePublicId) await deleteFromCloudinary(game.imagePublicId);
-  if (game.bannerPublicId) await deleteFromCloudinary(game.bannerPublicId);
+  if (game.imagePublicId) await deleteFromR2(game.imagePublicId);
+  if (game.bannerPublicId) await deleteFromR2(game.bannerPublicId);
 
   await Category.deleteMany({ game: game.slug });
   await Game.deleteOne({ _id: game._id });

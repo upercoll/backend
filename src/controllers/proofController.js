@@ -1,7 +1,7 @@
 const ProofOfDelivery = require("../models/ProofOfDelivery");
 const ClaimSession = require("../models/ClaimSession");
 const AgentStats = require("../models/AgentStats");
-const { uploadToCloudinary } = require("../config/cloudinary");
+const { uploadToR2 } = require("../config/r2");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const { getIO } = require("../config/socket");
@@ -20,9 +20,9 @@ exports.submitProof = catchAsync(async (req, res, next) => {
 
   const uploads = await Promise.all(
     files.map(f =>
-      uploadToCloudinary(f.buffer, {
+      uploadToR2(f.buffer, {
         folder: "rbstars/proofs",
-        transformation: [{ width: 1200, quality: "auto" }],
+        originalName: f.originalname,
       })
     )
   );

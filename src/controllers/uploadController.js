@@ -1,4 +1,4 @@
-const { uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
@@ -17,9 +17,9 @@ exports.uploadSingle = catchAsync(async (req, res, next) => {
     });
   }
 
-  const result = await uploadToCloudinary(req.file.buffer, {
+  const result = await uploadToR2(req.file.buffer, {
     folder,
-    transformation: transformation.length ? transformation : undefined,
+    originalName: req.file.originalname,
   });
 
   res.json({
@@ -35,7 +35,7 @@ exports.uploadMultiple = catchAsync(async (req, res, next) => {
 
   const results = await Promise.all(
     req.files.map((f) =>
-      uploadToCloudinary(f.buffer, { folder, transformation: [{ quality: "auto" }] })
+      uploadToR2(f.buffer, { folder, originalName: f.originalname })
     )
   );
 
@@ -50,6 +50,6 @@ exports.uploadMultiple = catchAsync(async (req, res, next) => {
 exports.deleteImage = catchAsync(async (req, res, next) => {
   const { publicId } = req.body;
   if (!publicId) return next(new AppError("publicId required", 400));
-  await deleteFromCloudinary(publicId);
+  await deleteFromR2(publicId);
   res.json({ success: true, message: "Image deleted" });
 });

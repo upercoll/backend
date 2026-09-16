@@ -1,6 +1,6 @@
 const AdminProfile = require("../models/AdminProfile");
 const TeamMember = require("../models/TeamMember");
-const { uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
@@ -50,14 +50,14 @@ exports.uploadProfilePicture = catchAsync(async (req, res, next) => {
   const profile = await AdminProfile.findOne({ memberId: req.panelUser.id, memberType });
   if (!profile) return next(new AppError("Profile not found", 404));
 
-  if (profile.profilePicture && profile.profilePicture.includes("cloudinary")) {
+  if (profile.profilePicture && !profile.profilePicture.includes("data:image")) {
     const publicId = profile.profilePicture.split("/").slice(-1)[0].split(".")[0];
-    await deleteFromCloudinary(`rbstars/avatars/${publicId}`);
+    await deleteFromR2(`rbstars/avatars/${publicId}`);
   }
 
-  const result = await uploadToCloudinary(req.file.buffer, {
+  const result = await uploadToR2(req.file.buffer, {
     folder: "rbstars/avatars",
-    transformation: [{ width: 200, height: 200, crop: "fill", gravity: "face" }],
+    originalName: req.file.originalname,
   });
 
   profile.profilePicture = result.secure_url;

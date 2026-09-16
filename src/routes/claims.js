@@ -2,7 +2,7 @@ const router = require("express").Router();
 const ctrl = require("../controllers/claimController");
 const { protect, adminOnly } = require("../middleware/auth");
 const rateLimit = require("express-rate-limit");
-const { upload } = require("../config/cloudinary");
+const { upload } = require("../config/r2");
 
 const claimCreateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { upload } = require("../config/cloudinary");
+const { upload } = require("../config/r2");
 const { panelAuth, requirePermission, ownerOnly } = require("../middleware/panelAuth");
 
 const panelAuthCtrl = require("../controllers/panelAuthController");

@@ -1290,8 +1290,8 @@ exports.submitFeedback = catchAsync(async (req, res, next) => {
   let proofImageUrl = null;
   if (req.file) {
     try {
-      const { uploadToCloudinary } = require("../config/cloudinary");
-      const result = await uploadToCloudinary(req.file.buffer, { folder: "rbstars/reviews" });
+      const { uploadToR2 } = require("../config/r2");
+      const result = await uploadToR2(req.file.buffer, { folder: "rbstars/reviews", originalName: req.file.originalname });
       proofImageUrl = result.secure_url;
     } catch (err) {
       logger.error("Failed to upload review proof image:", err);

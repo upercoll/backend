@@ -135,13 +135,13 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
   if (!["active", "pending"].includes(session.status))
     return next(new AppError("Session is not active", 400));
 
-  // Upload any proof screenshots to Cloudinary
+  // Upload any proof screenshots to R2
   let proofImageUrls = [];
   if (req.files && req.files.length > 0) {
     try {
-      const { uploadToCloudinary } = require("../config/cloudinary");
+      const { uploadToR2 } = require("../config/r2");
       const uploads = await Promise.all(
-        req.files.map(f => uploadToCloudinary(f.buffer, { folder: "rbstars/deliverer-proofs" }))
+        req.files.map(f => uploadToR2(f.buffer, { folder: "rbstars/deliverer-proofs", originalName: f.originalname }))
       );
       proofImageUrls = uploads.map(u => u.secure_url);
     } catch (err) {
