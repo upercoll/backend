@@ -1,7 +1,6 @@
 const stripe = require("../config/stripe");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
-const Customer = require("../models/Customer");
 const PromoCode = require("../models/PromoCode");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
@@ -181,20 +180,6 @@ async function finalizePaidOrder(order) {
   order.status = "paid";
   order.set("delivery.status", "in_progress");
   await order.save();
-
-  // Update customer totalSpent for level system
-  try {
-    if (order.customer?.email && order.pricing?.total > 0) {
-      await Customer.findOneAndUpdate(
-        { email: order.customer.email },
-        { $inc: { totalSpent: order.pricing.total } },
-        { new: false }
-      );
-    }
-  } catch (err) {
-    logger.error("Failed to update customer totalSpent:", err);
-  }
-
   return order;
 }
 

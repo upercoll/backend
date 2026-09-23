@@ -48,11 +48,6 @@ const customerSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    totalSpent: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
     lastLogin: { type: Date },
   },
   { timestamps: true }
