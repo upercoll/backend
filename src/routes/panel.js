@@ -147,6 +147,7 @@ router.get("/customers/:id", ownerOnly, customerAdminCtrl.getCustomer);
 router.patch("/customers/:id", ownerOnly, customerAdminCtrl.updateCustomer);
 router.delete("/customers/:id", ownerOnly, customerAdminCtrl.deleteCustomer);
 
+const ticketCtrl = require("../controllers/ticketController");
 const socialCtrl = require("../controllers/socialController");
 router.get("/socials",                                  requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminList);
 router.get("/socials/creators",                         requirePermission(["view_socials", "manage_socials"]), socialCtrl.adminListCreators);
@@ -192,5 +193,16 @@ router.get("/admin/deliverers/:id/payouts", requirePermission(["view_deliverers"
 router.patch("/admin/deliverers/:id", requirePermission("manage_deliverers"), deliverersCtrl.updateDeliverer);
 router.post("/admin/deliverers/:id/mark-paid", requirePermission("manage_deliverers"), deliverersCtrl.markPaid);
 router.delete("/admin/deliverers/:id", ownerOnly, deliverersCtrl.deleteDeliverer);
+
+router.get("/tickets/queue", requirePermission("ticket_agent"), ticketCtrl.listAgentTickets);
+router.get("/tickets/stats", requirePermission("ticket_agent"), ticketCtrl.getTicketStats);
+router.get("/tickets/:ticketId", requirePermission("ticket_agent"), ticketCtrl.getTicketFull);
+router.patch("/tickets/:ticketId/assign", requirePermission("manage_tickets"), ticketCtrl.assignTicket);
+router.patch("/tickets/:ticketId/status", requirePermission("ticket_agent"), ticketCtrl.updateTicketStatus);
+router.patch("/tickets/:ticketId/priority", requirePermission("manage_tickets"), ticketCtrl.updateTicketPriority);
+router.patch("/tickets/:ticketId/resolve", requirePermission("ticket_agent"), ticketCtrl.resolveTicket);
+router.patch("/tickets/:ticketId/close", requirePermission("ticket_agent"), ticketCtrl.closeTicketByAgent);
+router.post("/tickets/:ticketId/reply", requirePermission("ticket_agent"), ticketCtrl.agentReply);
+router.post("/tickets/:ticketId/tags", requirePermission("ticket_agent"), ticketCtrl.addTag);
 
 module.exports = router;

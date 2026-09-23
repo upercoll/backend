@@ -50,6 +50,10 @@ const PERMISSIONS = [
 
   "view_socials",
   "manage_socials",
+
+  "view_tickets",
+  "manage_tickets",
+  "ticket_agent",
 ];
 
 const roleSchema = new mongoose.Schema(

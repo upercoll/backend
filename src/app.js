@@ -25,6 +25,7 @@ const collaboratorRoutes = require("./routes/collaborator");
 const stockerPanelRoutes = require("./routes/stockerPanel");
 const delivererPanelRoutes = require("./routes/delivererPanel");
 const socialsRoutes = require("./routes/socials");
+const ticketRoutes = require("./routes/tickets");
 
 const app = express();
 
@@ -80,6 +81,7 @@ app.use("/api/collab", collaboratorRoutes);
 app.use("/api/stocker", stockerPanelRoutes);
 app.use("/api/deliverer", delivererPanelRoutes);
 app.use("/api/socials", socialsRoutes);
+app.use("/api/tickets", ticketRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });

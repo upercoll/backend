@@ -582,6 +582,71 @@ function initSocket(server) {
       }
     });
 
+    socket.on("ticket:join", ({ ticketId }) => {
+      if (!ticketId) return;
+      socket.join(`ticket:${ticketId}`);
+      logger.info(`Socket joined ticket room: ${ticketId}`);
+    });
+
+    socket.on("ticket:message", async ({ ticketId, text, senderName }) => {
+      if (!ticketId || !text?.trim()) return;
+      try {
+        const Ticket = require("../models/Ticket");
+        const ticket = await Ticket.findOne({ ticketId });
+        if (!ticket) return;
+        if (ticket.status === "closed") {
+          socket.emit("ticket:error", { message: "This ticket is closed." });
+          return;
+        }
+
+        const isAgentUser = !!(socket.user || socket.panelUserId);
+        const msgSender = isAgentUser ? "agent" : "customer";
+        const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : ticket.customerName || "Customer");
+
+        const msg = {
+          sender: msgSender,
+          text: text.slice(0, 2000),
+          senderName: name,
+          timestamp: new Date(),
+        };
+        ticket.messages.push(msg);
+        if (msgSender === "agent") ticket.unreadCustomer = (ticket.unreadCustomer || 0) + 1;
+        else ticket.unreadAgent = (ticket.unreadAgent || 0) + 1;
+        ticket.lastReplyAt = new Date();
+        await ticket.save();
+
+        const savedMsg = ticket.messages[ticket.messages.length - 1];
+        io.to(`ticket:${ticketId}`).emit("ticket:message", {
+          ticketId,
+          message: savedMsg.toObject(),
+        });
+
+        if (msgSender === "customer") {
+          io.to("support-room").emit("ticket:message", {
+            ticketId,
+            message: savedMsg.toObject(),
+          });
+        }
+      } catch (err) {
+        logger.error("ticket:message error:", err);
+      }
+    });
+
+    socket.on("ticket:typing", ({ ticketId, senderName }) => {
+      if (!ticketId) return;
+      socket.to(`ticket:${ticketId}`).emit("ticket:typing", { senderName });
+    });
+
+    socket.on("ticket:update", ({ ticketId, type }) => {
+      if (!ticketId) return;
+      io.to(`ticket:${ticketId}`).emit("ticket:update", { ticketId, type });
+    });
+
+    socket.on("ticket:assigned", ({ ticketId, agentId }) => {
+      if (!ticketId || !agentId) return;
+      io.to(`ticket:agent:${agentId}`).emit("ticket:assigned", { ticketId });
+    });
+
     socket.on("queue:join", ({ games, agentId, agentName }) => {
       if (!Array.isArray(games)) return;
 
