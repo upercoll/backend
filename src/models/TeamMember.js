@@ -26,6 +26,11 @@ const teamMemberSchema = new mongoose.Schema(
       enum: ["invited", "active", "disabled"],
       default: "invited",
     },
+    // Owner-configurable commission rate — written by PATCH
+    // /team/:id/commission. Without this path the strict-mode update was a
+    // silent no-op and every commission came out 0%.
+    commissionRate: { type: Number, default: 0, min: 0, max: 100 },
+    displayName: { type: String, trim: true },
     claimGames: [{ type: String, trim: true }],
     claimCategories: [{ type: String, trim: true }],
     inviteToken: { type: String, select: false },

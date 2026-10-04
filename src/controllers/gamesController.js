@@ -5,6 +5,9 @@ const { uploadToR2, deleteFromR2 } = require("../config/r2");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 
+// Public reads must never expose the private-server link.
+const PUBLIC_GAME_FIELDS = "-autoDelivery.privateServerUrl";
+
 exports.listGames = catchAsync(async (req, res) => {
   const { active } = req.query;
   const filter = {};
@@ -18,7 +21,9 @@ exports.listGames = catchAsync(async (req, res) => {
         Product.countDocuments({ game: g.slug, active: true }),
         Category.countDocuments({ game: g.slug }),
       ]);
-      return { ...g.toObject(), productCount, categoryCount };
+      const plain = g.toObject();
+      if (plain.autoDelivery) delete plain.autoDelivery.privateServerUrl;
+      return { ...plain, productCount, categoryCount };
     })
   );
 
@@ -26,7 +31,7 @@ exports.listGames = catchAsync(async (req, res) => {
 });
 
 exports.getGame = catchAsync(async (req, res, next) => {
-  const game = await Game.findOne({ slug: req.params.slug });
+  const game = await Game.findOne({ slug: req.params.slug }).select(PUBLIC_GAME_FIELDS);
   if (!game) return next(new AppError("Game not found", 404));
 
   const categories = await Category.find({ game: game.slug });

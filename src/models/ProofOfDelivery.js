@@ -39,6 +39,9 @@ const proofOfDeliverySchema = new mongoose.Schema(
 
 proofOfDeliverySchema.index({ agentId: 1, createdAt: -1 });
 proofOfDeliverySchema.index({ viewedByOwner: 1 });
-proofOfDeliverySchema.index({ roomId: 1 });
+// NOTE: intentionally NOT unique — the deliverer panel and the auto-delivery
+// bot can both file a proof for the same room, and a unique index would turn
+// that into an E11000 500 on the delivery path. Idempotency is enforced in
+// proofController.submitProof instead.
 
 module.exports = mongoose.model("ProofOfDelivery", proofOfDeliverySchema);

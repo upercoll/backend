@@ -35,6 +35,10 @@ const promoCodeSchema = new mongoose.Schema(
         email: String,
         usedAt: { type: Date, default: Date.now },
         orderId: mongoose.Schema.Types.ObjectId,
+        // Set while a checkout holds this use but has not paid yet — see
+        // reservePromoUse() in paymentController. Lets us roll a use back.
+        reservationId: { type: String },
+        reserved: { type: Boolean, default: false },
       },
     ],
 

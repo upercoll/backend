@@ -145,8 +145,16 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
   let totalSaleValue = 0;
 
   for (const item of items) {
-    if (!item.productId || !item.quantity || item.quantity < 1) {
+    if (!item.productId) {
       return next(new AppError("Each item needs a product and quantity", 400));
+    }
+    // Strict integer validation. "abc", 2.5 or "5" all passed the old
+    // `!item.quantity || item.quantity < 1` check and later blew up inside
+    // addStock() — after the request had already been flipped to "stocked",
+    // leaving it permanently wedged with phantom inventory on earlier items.
+    const qty = Number(item.quantity);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 100000) {
+      return next(new AppError("Each item needs a whole-number quantity of at least 1", 400));
     }
 
     const product = await Product.findById(item.productId);
@@ -155,12 +163,13 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
     }
 
     const storePrice = product.price;
-    const customPrice = item.customPrice != null && item.customPrice > 0
-      ? parseFloat(item.customPrice)
-      : null;
+    const parsedCustom = item.customPrice == null ? NaN : parseFloat(item.customPrice);
+    // Number.isFinite rejects "Infinity"/"abc" — either would store a bogus
+    // salePrice and make totalSaleValue NaN.
+    const customPrice = Number.isFinite(parsedCustom) && parsedCustom > 0 ? parsedCustom : null;
     const effectivePrice = customPrice !== null ? customPrice : storePrice;
-    const itemTotal = effectivePrice * item.quantity;
-    totalSaleValue += itemTotal;
+    const itemTotal = effectivePrice * qty;
+    totalSaleValue += Number(itemTotal.toFixed(2));
 
     enrichedItems.push({
       product: product._id,
@@ -169,7 +178,7 @@ exports.submitRequest = catchAsync(async (req, res, next) => {
       game: product.game,
       imageUrl: product.imageUrl || (product.images && product.images[0]) || "",
       gradient: product.gradient,
-      quantity: item.quantity,
+      quantity: qty,
       storePrice,
       customPrice: customPrice !== null ? customPrice : undefined,
       salePrice: effectivePrice,
@@ -321,9 +330,11 @@ exports.markMyRequestStocked = catchAsync(async (req, res, next) => {
     item.soldQuantity = 0;
   }
 
-  // Commission is based on store price, not the stocker's custom price
+  // Commission is based on the AGREED store price only. `||` fallback to
+  // `salePrice` (the stocker's own typed number) would let them set their own
+  // commission base whenever a product's store price is 0.
   const storeBasedTotal = request.items.reduce(
-    (sum, item) => sum + (item.storePrice || item.salePrice || 0) * (item.quantity || 1),
+    (sum, item) => sum + (Number(item.storePrice) || 0) * (item.quantity || 1),
     0
   );
   const commission = (storeBasedTotal * (stocker.commissionRate || 0)) / 100;

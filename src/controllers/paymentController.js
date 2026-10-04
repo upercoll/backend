@@ -6,6 +6,7 @@ const PromoCode = require("../models/PromoCode");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const logger = require("../utils/logger");
+const { money, getTaxSettings, buildPricing } = require("../utils/tax");
 const { sendOrderConfirmationEmail } = require("../config/email");
 const {
   removeStock,
@@ -99,11 +100,107 @@ async function applyPromoCode(code, subtotal, email) {
   return { discount, discountPercent, total, promoCode: promo.code, promoId: promo._id };
 }
 
-async function markPromoUsed(promoCode, email, orderId) {
+// ---------------------------------------------------------------------------
+// Promo usage accounting.
+//
+// `usedCount` is INCREMENTED ATOMICALLY (a conditional findOneAndUpdate) the
+// moment a checkout is created, NOT when the payment succeeds. Without this
+// two concurrent checkouts both reading usedCount=0 on a maxUses=1 code would
+// both pass `isExhausted` and both receive the discount — the owner hands out
+// unlimited uses of a capped code.
+//
+// The reservation carries a unique id so it can be rolled back if the order or
+// the Stripe intent fails, and so `markPromoUsed` can flip exactly that entry
+// to "used" without counting it twice.
+// ---------------------------------------------------------------------------
+async function reservePromoUse(code, email) {
+  const upper = String(code).toUpperCase().trim();
+  const emailLower = String(email || "").toLowerCase();
+  const now = new Date();
+  const reservationId = require("crypto").randomUUID();
+
+  let promo;
+  try {
+    promo = await PromoCode.findOneAndUpdate(
+      {
+        code: upper,
+        active: true,
+        $and: [
+          { $or: [{ startsAt: null }, { startsAt: { $lte: now } }] },
+          { $or: [{ expiresAt: null }, { expiresAt: { $gte: now } }] },
+          // global cap: usedCount must still be below maxUses (null = unlimited)
+          { $or: [{ maxUses: null }, { $expr: { $lt: ["$usedCount", "$maxUses"] } }] },
+          // per-customer cap: only entries already on THIS reservation count
+          {
+            $or: [
+              { maxUsesPerUser: null },
+              {
+                $expr: {
+                  $lt: [
+                    {
+                      $size: {
+                        $filter: {
+                          input: { $ifNull: ["$usedBy", []] },
+                          as: "u",
+                          cond: { $eq: [{ $toLower: { $ifNull: ["$$u.email", ""] } }, emailLower] },
+                        },
+                      },
+                    },
+                    "$maxUsesPerUser",
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        $inc: { usedCount: 1 },
+        $push: { usedBy: { email: emailLower, usedAt: now, reservationId, reserved: true } },
+      },
+      { new: true }
+    );
+  } catch (err) {
+    // Never let a Mongo query-shape problem take checkout down. Returning null
+    // means "no reservation" — markPromoUsed then falls back to the legacy
+    // deferred counting path.
+    logger.warn(`Promo reservation unavailable for ${upper}: ${err.message} — deferring count`);
+    return null;
+  }
+
+  if (!promo) throw new AppError("This promo code has reached its usage limit", 400);
+  return reservationId;
+}
+
+// Give a reserved use back (checkout failed after the promo was counted).
+async function releasePromoUse(code, reservationId) {
+  if (!code || !reservationId) return;
+  try {
+    await PromoCode.updateOne(
+      { code: String(code).toUpperCase().trim(), usedCount: { $gt: 0 } },
+      { $inc: { usedCount: -1 }, $pull: { usedBy: { reservationId } } }
+    );
+  } catch (err) {
+    logger.warn(`Failed to release promo reservation ${code}: ${err.message}`);
+  }
+}
+
+// Record WHICH order consumed the reservation. The count was already taken by
+// reservePromoUse — no second $inc here, otherwise maxUses is double-spent.
+async function markPromoUsed(promoCode, email, orderId, reservationId) {
   if (!promoCode) return;
   try {
+    if (reservationId) {
+      await PromoCode.updateOne(
+        { code: String(promoCode).toUpperCase().trim(), "usedBy.reservationId": reservationId },
+        { $set: { "usedBy.$.reserved": false, "usedBy.$.orderId": orderId, "usedBy.$.usedAt": new Date() } }
+      );
+      return;
+    }
+    // Legacy path (no reservation id): count it once, deferred. Bounded by the
+    // read-side isExhausted() check in applyPromoCode.
     await PromoCode.findOneAndUpdate(
-      { code: promoCode.toUpperCase() },
+      { code: String(promoCode).toUpperCase().trim() },
       {
         $inc: { usedCount: 1 },
         $push: { usedBy: { email, orderId, usedAt: new Date() } },
@@ -111,6 +208,41 @@ async function markPromoUsed(promoCode, email, orderId) {
     );
   } catch (err) {
     logger.warn(`Failed to mark promo ${promoCode} as used: ${err.message}`);
+  }
+}
+
+/** Socket is optional — never let a broadcast failure fail a paid order. */
+function tryGetIO() {
+  try {
+    return require("../config/socket").getIO();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tell every connected panel that money just came in.
+ *
+ * `finalizePaidOrder` is the single atomic winner for an order, so emitting
+ * here means exactly one `admin:new_order` per paid order (the webhook and the
+ * client-side confirm both race for the same lock — only one gets through).
+ */
+function broadcastNewOrder(order) {
+  try {
+    const io = tryGetIO();
+    if (!io) return;
+    io.to("order-alerts").emit("admin:new_order", {
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      total: order.pricing?.total ?? 0,
+      tax: order.pricing?.tax ?? 0,
+      itemCount: (order.items || []).reduce((n, i) => n + (i.quantity || 0), 0),
+      customerEmail: order.customer?.email || "",
+      robloxUsername: order.customer?.robloxUsername || "",
+      createdAt: order.createdAt,
+    });
+  } catch (err) {
+    logger.warn("Failed to broadcast new order:", err.message);
   }
 }
 
@@ -125,6 +257,8 @@ function fireOrderConfirmationEmail(order) {
       unitPrice: i.unitPrice,
     })),
     total: order.pricing.total,
+    tax: order.pricing.tax || 0,
+    taxLabel: order.pricing.taxLabel || "",
     robloxUsername: order.customer.robloxUsername,
     claimUrl: frontendUrl,
   }).catch((err) => logger.warn("Order confirmation email failed:", err.message));
@@ -182,6 +316,9 @@ async function finalizePaidOrder(order) {
   order.set("delivery.status", "in_progress");
   await order.save();
 
+  // Panel-wide "new order" alert (sound + toast on every open admin page).
+  broadcastNewOrder(order);
+
   // Update customer totalSpent for level system
   try {
     if (order.customer?.email && order.pricing?.total > 0) {
@@ -208,11 +345,18 @@ exports.createPaymentIntent = catchAsync(async (req, res, next) => {
   }
 
   const { resolvedItems, subtotal } = await resolveCartItems(cartItems);
-  const { discount, discountPercent, total, promoCode: validatedCode } = await applyPromoCode(
+  const { discount, discountPercent, promoCode: validatedCode } = await applyPromoCode(
     promoCode,
     subtotal,
     customer.email
   );
+
+  // Tax is resolved and applied SERVER-SIDE from the stored rate, on top of the
+  // discounted amount. The browser only displays it — it can never influence
+  // what is charged.
+  const taxSettings = await getTaxSettings();
+  const pricing = buildPricing({ subtotal, discount, tax: taxSettings });
+  const total = pricing.total;
 
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   const recentDupe = await Order.findOne({
@@ -239,47 +383,62 @@ exports.createPaymentIntent = catchAsync(async (req, res, next) => {
     } catch {}
   }
 
-  const order = await Order.create({
-    customer: {
-      email: customer.email,
-      robloxUsername: customer.robloxUsername,
-    },
-    items: resolvedItems,
-    pricing: { subtotal, discount, discountPercent, total },
-    payment: { method: "card", status: "pending" },
-    ipAddress: req.ip,
-    userAgent: req.headers["user-agent"],
-  });
+  // Reserve the promo use AFTER the duplicate-intent short-circuit, so retrying
+  // a checkout never burns a second use of the same code.
+  const promoReservation = validatedCode
+    ? await reservePromoUse(validatedCode, customer.email)
+    : null;
 
-  const intentParams = {
-    amount: Math.round(total * 100),
-    currency: "usd",
-    confirm: false,
-    metadata: {
-      orderId: order._id.toString(),
-      orderNumber: order.orderNumber,
-      robloxUsername: customer.robloxUsername,
-      email: customer.email,
-    },
-    receipt_email: customer.email,
-    description: `RBstars order ${order.orderNumber}`,
-  };
+  let order;
+  let intent;
+  try {
+    order = await Order.create({
+      customer: {
+        email: customer.email,
+        robloxUsername: customer.robloxUsername,
+      },
+      items: resolvedItems,
+      pricing: { ...pricing, discountPercent },
+      payment: { method: "card", status: "pending" },
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
 
-  if (paymentMethodId) {
-    intentParams.payment_method = paymentMethodId;
-    intentParams.automatic_payment_methods = { enabled: false };
-    intentParams.payment_method_types = ["card"];
-  } else {
-    intentParams.automatic_payment_methods = { enabled: true };
+    const intentParams = {
+      amount: Math.round(total * 100),
+      currency: "usd",
+      confirm: false,
+      metadata: {
+        orderId: order._id.toString(),
+        orderNumber: order.orderNumber,
+        robloxUsername: customer.robloxUsername,
+        email: customer.email,
+      },
+      receipt_email: customer.email,
+      description: `RBstars order ${order.orderNumber}`,
+    };
+
+    if (paymentMethodId) {
+      intentParams.payment_method = paymentMethodId;
+      intentParams.automatic_payment_methods = { enabled: false };
+      intentParams.payment_method_types = ["card"];
+    } else {
+      intentParams.automatic_payment_methods = { enabled: true };
+    }
+
+    intent = await stripe.paymentIntents.create(intentParams);
+
+    order.payment.stripePaymentIntentId = intent.id;
+    await order.save();
+  } catch (err) {
+    // Checkout died after we counted the use — give it back so a failed
+    // payment can't quietly burn through a capped promo code.
+    await releasePromoUse(validatedCode, promoReservation);
+    throw err;
   }
 
-  const intent = await stripe.paymentIntents.create(intentParams);
-
-  order.payment.stripePaymentIntentId = intent.id;
-  await order.save();
-
   if (validatedCode) {
-    await markPromoUsed(validatedCode, customer.email, order._id);
+    await markPromoUsed(validatedCode, customer.email, order._id, promoReservation);
   }
 
   res.json({
@@ -339,40 +498,58 @@ exports.createPaypalPaymentIntent = catchAsync(async (req, res, next) => {
   }
 
   const { resolvedItems, subtotal } = await resolveCartItems(cartItems);
-  const { discount, discountPercent, total, promoCode: validatedCode } = await applyPromoCode(
+  const { discount, discountPercent, promoCode: validatedCode } = await applyPromoCode(
     promoCode,
     subtotal,
     customer.email
   );
 
-  const order = await Order.create({
-    customer: { email: customer.email, robloxUsername: customer.robloxUsername },
-    items: resolvedItems,
-    pricing: { subtotal, discount, discountPercent, total },
-    payment: { method: "paypal", status: "pending" },
-    ipAddress: req.ip,
-    userAgent: req.headers["user-agent"],
-  });
+  // Tax is resolved and applied SERVER-SIDE from the stored rate, on top of the
+  // discounted amount. The browser only displays it — it can never influence
+  // what is charged.
+  const taxSettings = await getTaxSettings();
+  const pricing = buildPricing({ subtotal, discount, tax: taxSettings });
+  const total = pricing.total;
 
-  const intent = await stripe.paymentIntents.create({
-    amount: Math.round(total * 100),
-    currency: "usd",
-    payment_method_types: ["paypal"],
-    metadata: {
-      orderId: order._id.toString(),
-      orderNumber: order.orderNumber,
-      robloxUsername: customer.robloxUsername,
-      email: customer.email,
-    },
-    receipt_email: customer.email,
-    description: `RBstars order ${order.orderNumber}`,
-  });
+  const promoReservation = validatedCode
+    ? await reservePromoUse(validatedCode, customer.email)
+    : null;
 
-  order.payment.stripePaymentIntentId = intent.id;
-  await order.save();
+  let order;
+  let intent;
+  try {
+    order = await Order.create({
+      customer: { email: customer.email, robloxUsername: customer.robloxUsername },
+      items: resolvedItems,
+      pricing: { ...pricing, discountPercent },
+      payment: { method: "paypal", status: "pending" },
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+
+    intent = await stripe.paymentIntents.create({
+      amount: Math.round(total * 100),
+      currency: "usd",
+      payment_method_types: ["paypal"],
+      metadata: {
+        orderId: order._id.toString(),
+        orderNumber: order.orderNumber,
+        robloxUsername: customer.robloxUsername,
+        email: customer.email,
+      },
+      receipt_email: customer.email,
+      description: `RBstars order ${order.orderNumber}`,
+    });
+
+    order.payment.stripePaymentIntentId = intent.id;
+    await order.save();
+  } catch (err) {
+    await releasePromoUse(validatedCode, promoReservation);
+    throw err;
+  }
 
   if (validatedCode) {
-    await markPromoUsed(validatedCode, customer.email, order._id);
+    await markPromoUsed(validatedCode, customer.email, order._id, promoReservation);
   }
 
   res.json({

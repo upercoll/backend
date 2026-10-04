@@ -18,6 +18,10 @@ exports.getSessionHistory = catchAsync(async (req, res, next) => {
 
 exports.getAllSessions = catchAsync(async (req, res) => {
   const sessions = await ChatMessage.aggregate([
+    // $last depends on stream order — without this sort "last message" was
+    // whatever Mongo happened to hand back, so the admin list could show a
+    // stale preview / timestamp.
+    { $sort: { createdAt: 1 } },
     {
       $group: {
         _id: "$sessionId",

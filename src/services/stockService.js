@@ -98,32 +98,46 @@ async function allocateStockedBatches(order) {
       );
       if (!requestItem) continue;
 
-      const allocatedQuantity = Math.min(remaining, requestItem.remainingQuantity);
-      const updated = await StockRequest.findOneAndUpdate(
-        {
-          _id: request._id,
-          items: {
-            $elemMatch: {
-              product: item.product,
-              remainingQuantity: { $gte: allocatedQuantity },
+      // Bounded retry: another sale may have taken the batch between our read
+      // and the conditional update. Giving up silently (the old `continue`)
+      // sold stock without attributing it, so the stocker lost that commission.
+      let allocatedQuantity = 0;
+      let updated = null;
+      for (let attempt = 0; attempt < 5 && !updated; attempt++) {
+        const fresh = await StockRequest.findOne({ _id: request._id }).select("items").lean();
+        const freshItem = (fresh?.items || []).find((i) => String(i.product) === String(item.product));
+        const available = Number(freshItem?.remainingQuantity) || 0;
+        allocatedQuantity = Math.min(remaining, available);
+        if (allocatedQuantity <= 0) break;
+
+        updated = await StockRequest.findOneAndUpdate(
+          {
+            _id: request._id,
+            items: {
+              $elemMatch: {
+                product: item.product,
+                remainingQuantity: { $gte: allocatedQuantity },
+              },
             },
           },
-        },
-        {
-          $inc: {
-            "items.$.remainingQuantity": -allocatedQuantity,
-            "items.$.soldQuantity": allocatedQuantity,
+          {
+            $inc: {
+              "items.$.remainingQuantity": -allocatedQuantity,
+              "items.$.soldQuantity": allocatedQuantity,
+            },
           },
-        },
-        { new: true }
-      );
-      if (!updated) continue;
+          { new: true }
+        );
+      }
+      if (!updated || allocatedQuantity <= 0) continue;
 
       allocations.push({
         request: request._id,
         stocker: request.stocker,
         quantity: allocatedQuantity,
-        unitRevenue: Number(requestItem.storePrice ?? requestItem.salePrice ?? 0),
+        // Agreed store price ONLY. Falling back to `salePrice` (a number the
+        // stocker typed) would let them choose their own revenue basis.
+        unitRevenue: Number(requestItem.storePrice ?? 0),
         // Freeze the rate selected when this batch was stocked. A later profile
         // edit must never change what a completed sale pays.
         commissionRate: Number(request.commissionRate || 0),
@@ -152,22 +166,40 @@ async function allocateStockedBatches(order) {
 }
 
 async function rollbackStockedBatchAllocations(orderId) {
-  const sales = await StockSale.find({ order: orderId });
+  // Atomically claim the sales BEFORE restoring anything. Two concurrent callers
+  // (refund + a failed payment-finalize) both used to read the same StockSale
+  // docs and each added the quantity back — remainingQuantity then exceeded the
+  // real quantity and units that never existed could be allocated to other
+  // orders (oversell, plus commission on phantom stock).
+  const sales = [];
+  for (;;) {
+    const pending = await StockSale.findOne({ order: orderId });
+    if (!pending) break;
+    const claimed = await StockSale.findOneAndDelete({ _id: pending._id });
+    if (!claimed) continue; // someone else claimed this one — try the next
+    sales.push(claimed);
+    if (sales.length > 500) break; // safety valve; orders never have more sales
+  }
+
   for (const sale of sales) {
     for (const allocation of sale.allocations || []) {
+      const restored = Math.max(0, Number(allocation.quantity) || 0);
+      if (!restored) continue;
       await StockRequest.updateOne(
         { _id: allocation.request },
         {
+          // The sale doc is deleted atomically above, so a replayed rollback
+          // finds nothing to restore — remainingQuantity cannot be inflated.
           $inc: {
-            "items.$[item].remainingQuantity": allocation.quantity,
-            "items.$[item].soldQuantity": -allocation.quantity,
+            "items.$[item].remainingQuantity": restored,
+            "items.$[item].soldQuantity": -restored,
           },
         },
         { arrayFilters: [{ "item.product": sale.product }] }
       );
     }
   }
-  await StockSale.deleteMany({ order: orderId });
+  return sales.length;
 }
 
 async function markOrderDelivered(orderNumber, claimRoomId) {

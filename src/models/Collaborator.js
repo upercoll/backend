@@ -38,7 +38,7 @@ const collaboratorSchema = new mongoose.Schema(
     // Social creator agreement. Applied automatically to every new video, but can
     // be overridden on an individual video by the admin.
     socialRateType: { type: String, enum: ["per_1k", "per_video"], default: "per_1k" },
-    socialRate: { type: Number, default: 0 },
+    socialRate: { type: Number, default: 0, min: 0, max: 100000 },
     paymentMethods: [{ type: String, enum: ["paypal", "cashapp", "bank", "crypto", "other"] }],
     requiresPaymentProof: { type: Boolean, default: false },
     payoutRequestedAt: { type: Date, default: null },

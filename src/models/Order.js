@@ -40,6 +40,11 @@ const orderSchema = new mongoose.Schema(
       subtotal: { type: Number, required: true },
       discount: { type: Number, default: 0 },
       discountPercent: { type: Number, default: 0 },
+      // Tax is charged on the DISCOUNTED subtotal and added on top, so
+      // `total === subtotal - discount + tax`. Revenue and every commission
+      // base exclude `tax` — the owner has to remit it, it is not theirs.
+      tax: { type: Number, default: 0 },
+      taxLabel: { type: String, default: "" },
       total: { type: Number, required: true },
     },
 

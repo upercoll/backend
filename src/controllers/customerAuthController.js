@@ -15,9 +15,16 @@ function generate6DigitCode() {
 }
 
 async function sendVerificationEmail(email, displayName, code) {
+  // No Resend key means the platform cannot send mail. We deliberately do NOT
+  // print the code to the server log — that used to leak a live auth code into
+  // production logs. Surface a loud warning instead and let the send fail
+  // visibly rather than silently "succeeding".
   if (!process.env.RESEND_API_KEY) {
-    console.log(`[DEV] Verification code for ${email}: ${code}`);
-    return;
+    console.error(
+      "[config] RESEND_API_KEY is not set — verification emails cannot be sent. " +
+        "Set it before going live."
+    );
+    throw new Error("Email delivery is not configured");
   }
   const resend = getResend();
   await resend.emails.send({
@@ -67,24 +74,42 @@ exports.register = async (req, res, next) => {
 
     const code = generate6DigitCode();
     const expiry = new Date(Date.now() + 15 * 60 * 1000);
+    const emailConfigured = Boolean(process.env.RESEND_API_KEY);
+
+    // Deliver the code BEFORE creating the account. It used to be the other
+    // way round, so any delivery failure (missing RESEND_API_KEY, Resend
+    // outage) left an orphaned account behind: the user saw "Registration
+    // failed", then every retry answered "email already exists" and they
+    // could never finish signing up. Now a send failure throws while there
+    // is still nothing to clean up, so retrying simply works.
+    if (emailConfigured) {
+      await sendVerificationEmail(String(email).toLowerCase(), displayName, code);
+    } else {
+      // No mail transport configured at all. Rather than trap the account in
+      // a verification step nobody can complete, activate it immediately and
+      // shout about it in the logs so the key gets set.
+      console.error(
+        "[config] RESEND_API_KEY is not set — registering WITHOUT email verification. " +
+          "Set the key before going live so broadcasts only reach real inboxes."
+      );
+    }
 
     const customer = await Customer.create({
       email,
       password,
       displayName,
       robloxUsername,
-      emailVerificationCode: code,
-      emailVerificationExpiry: expiry,
+      ...(emailConfigured
+        ? { emailVerificationCode: code, emailVerificationExpiry: expiry }
+        : { emailVerified: true }),
     });
-
-    await sendVerificationEmail(customer.email, customer.displayName, code);
 
     const token = signToken(customer._id);
     res.status(201).json({
       success: true,
       token,
       customer: customer.toSafeObject(),
-      requiresVerification: true,
+      requiresVerification: emailConfigured,
     });
   } catch (err) {
     next(err);

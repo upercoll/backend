@@ -16,6 +16,24 @@ const productSchema = new mongoose.Schema(
     price: { type: Number, required: true, min: 0 },
     originalPrice: { type: Number, min: 0 },
 
+    // Purchase notice shown on the product page (e.g. Fisch: "only usable if
+    // you own the boat"). When required=true the buyer must tick the
+    // acknowledgment box before Add to Cart / Buy Now unlock.
+    notice: {
+      text: { type: String, trim: true, default: "" },
+      required: { type: Boolean, default: false },
+    },
+
+    // Display-only option groups (e.g. BedWars kit skin styles). Purely
+    // informational: no price or delivery impact, never sent to checkout.
+    variations: [
+      {
+        name: { type: String, trim: true },
+        options: [{ type: String, trim: true }],
+        _id: false,
+      },
+    ],
+
     gradient: {
       from: { type: String, default: "#7c3aed" },
       to: { type: String, default: "#4c1d95" },

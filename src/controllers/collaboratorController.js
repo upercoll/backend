@@ -41,7 +41,13 @@ async function getUnpaidSales(collaborator) {
 
   for (const order of orders) {
     const subtotal = order.pricing?.subtotal || 0;
-    const orderTotal = order.pricing?.total || subtotal;
+    // Creator cuts are a share of MERCHANDISE revenue, net of refunds.
+    // Tax is stripped first — `pricing.total` includes it, so without this the
+    // discountRatio would scale every item UP by the tax rate and hand the
+    // creator a cut on money the owner must remit.
+    const tax = Number(order.pricing?.tax) || 0;
+    const merchandise = Math.max(0, (order.pricing?.total || subtotal) - tax);
+    const orderTotal = Math.max(0, merchandise - (Number(order.refundAmount) || 0));
     const discountRatio = subtotal > 0 ? orderTotal / subtotal : 1;
 
     for (const item of order.items) {
@@ -414,7 +420,13 @@ exports.collabMe = catchAsync(async (req, res, next) => {
 
   for (const order of orders) {
     const subtotal = order.pricing?.subtotal || 0;
-    const orderTotal = order.pricing?.total || subtotal;
+    // Creator cuts are a share of MERCHANDISE revenue, net of refunds.
+    // Tax is stripped first — `pricing.total` includes it, so without this the
+    // discountRatio would scale every item UP by the tax rate and hand the
+    // creator a cut on money the owner must remit.
+    const tax = Number(order.pricing?.tax) || 0;
+    const merchandise = Math.max(0, (order.pricing?.total || subtotal) - tax);
+    const orderTotal = Math.max(0, merchandise - (Number(order.refundAmount) || 0));
     const discountRatio = subtotal > 0 ? orderTotal / subtotal : 1;
 
     for (const item of order.items) {

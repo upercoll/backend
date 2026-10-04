@@ -30,6 +30,16 @@ exports.submitProof = catchAsync(async (req, res, next) => {
   const proofImageUrls = uploads.map(u => u.secure_url);
   const proofImagePublicIds = uploads.map(u => u.public_id);
 
+  // Idempotency: an agent (or the deliverer panel + the bot) could otherwise file
+// N proofs for one room, inflating AgentStats.completedClaims — which is the
+// numerator of the completion-rate math in agentStatsController.
+  const existingProof = await ProofOfDelivery.findOne({ roomId, agentId: req.panelUser.id })
+    .select("_id createdAt")
+    .lean();
+  if (existingProof) {
+    return res.json({ success: true, data: { proof: existingProof, alreadySubmitted: true } });
+  }
+
   const proof = await ProofOfDelivery.create({
     claimSessionId: session._id,
     roomId,

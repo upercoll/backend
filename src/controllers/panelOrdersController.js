@@ -130,6 +130,19 @@ async function performStatusUpdate(order, req) {
 
   const isPaid = order.payment && order.payment.status === "succeeded";
 
+  // Status changes here can move REAL money (cancelling a paid order issues a
+  // full Stripe refund). The route allows the low-tier `claim_agent` permission
+  // for ordinary status edits, so the money-moving transitions must re-check
+  // the caller actually holds a refund permission.
+  const movesMoney =
+    status === "refunded" || (status === "cancelled" && isPaid && !!order.payment.stripePaymentIntentId);
+  if (movesMoney) {
+    const perms = req.panelUser?.permissions || [];
+    if (!req.panelUser?.isOwner && !perms.includes("refund_orders") && !perms.includes("manage_orders")) {
+      throw new AppError("You need the refund permission to change this order's money status", 403);
+    }
+  }
+
   if (status === "refunded" && !isPaid) {
     throw new AppError("Cannot refund an order that has not been paid.", 400);
   }
@@ -325,19 +338,41 @@ exports.fulfillOrder = catchAsync(async (req, res, next) => {
 });
 
 exports.refundOrder = catchAsync(async (req, res, next) => {
-  const { amount, reason, partial, restockItems } = req.body;
+  const { amount, reason, restockItems } = req.body;
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError("Order not found", 404));
 
-  const isPaid = order.payment && order.payment.status === "succeeded";
-  if (!isPaid) {
+  // "refunded" still means the charge WAS captured — it just means the money
+  // already went back, which the refundable check below reports properly.
+  const chargeCaptured =
+    !!order.payment && ["succeeded", "refunded"].includes(order.payment.status);
+  if (!chargeCaptured) {
     return next(new AppError("Cannot refund an unpaid order. Only paid orders can be refunded.", 400));
   }
 
   if (!amount || amount <= 0) return next(new AppError("Refund amount must be greater than 0", 400));
-  if (amount > order.pricing.total) return next(new AppError("Refund amount cannot exceed order total", 400));
 
-  const isPartial = partial || amount < order.pricing.total;
+  // Cap against what is still refundable, NOT against the order total — the old
+  // check let a $10 order be refunded $10 twice (refundAmount just accumulated).
+  const orderTotal = Number(order.pricing?.total) || 0;
+  const alreadyRefunded = Number(order.refundAmount) || 0;
+  const refundable = Math.max(0, Math.round((orderTotal - alreadyRefunded) * 100) / 100);
+  if (refundable <= 0) {
+    return next(new AppError("This order has already been fully refunded", 400));
+  }
+  if (amount > refundable) {
+    return next(
+      new AppError(
+        `Refund amount cannot exceed the remaining $${refundable.toFixed(2)} refundable on this order`,
+        400
+      )
+    );
+  }
+
+  // Derived server-side. The client used to send `partial` itself, so posting
+  // { amount: 1, partial: false } on a $100 order flipped it to a FULL refund
+  // while only $1 left the account.
+  const isPartial = amount < refundable;
 
   if (order.payment.stripePaymentIntentId) {
     try {
@@ -352,10 +387,28 @@ exports.refundOrder = catchAsync(async (req, res, next) => {
 
   const prevStatus = order.status;
   order.status = isPartial ? "partially_refunded" : "refunded";
-  order.payment.status = "refunded";
-  order.refundAmount = (order.refundAmount || 0) + amount;
+  // A PARTIAL refund must NOT move payment.status off "succeeded" — revenue,
+  // commission and totalSpent queries all filter on payment.status ===
+  // "succeeded", so a $1 refund used to erase the entire order from every one
+  // of them. Only a completed refund changes the charge state.
+  order.payment.status = isPartial ? "succeeded" : "refunded";
+  order.refundAmount = Math.round((alreadyRefunded + amount) * 100) / 100;
   order.refundReason = reason || "";
   order.refundedAt = new Date();
+
+  // Keep the customer's lifetime spend honest — it is $inc'd at payment time
+  // and was never reduced, so refunded money kept counting forever.
+  if (chargeCaptured && order.customer?.email) {
+    try {
+      const Customer = require("../models/Customer");
+      await Customer.updateOne(
+        { email: order.customer.email, totalSpent: { $gte: amount } },
+        { $inc: { totalSpent: -amount } }
+      );
+    } catch (custErr) {
+      console.error("Failed to adjust customer totalSpent on refund:", custErr.message);
+    }
+  }
 
   const by = req.panelUser?.email || "Admin";
   const details = `$${amount.toFixed(2)} refunded via Stripe${reason ? ` — Reason: ${reason}` : ""}${restockItems ? " — Inventory restocked" : ""}`;

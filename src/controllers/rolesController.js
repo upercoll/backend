@@ -42,6 +42,16 @@ exports.createRole = catchAsync(async (req, res, next) => {
   const existing = await Role.findOne({ name: name.trim(), active: true });
   if (existing) return next(new AppError("A role with this name already exists", 400));
 
+  // Same minting guard on create as on update.
+  if (!req.panelUser?.isOwner && permissions) {
+    const beyond = permissions.filter((p) => !(req.panelUser?.permissions || []).includes(p));
+    if (beyond.length) {
+      return next(
+        new AppError(`You cannot grant permissions you do not hold: ${beyond.join(", ")}`, 403)
+      );
+    }
+  }
+
   const role = await Role.create({
     name: name.trim(),
     description,
@@ -59,6 +69,25 @@ exports.updateRole = catchAsync(async (req, res, next) => {
   if (!role) return next(new AppError("Role not found", 404));
 
   const { name, description, color, permissions, claimGames } = req.body;
+
+  // Self-escalation guard: a non-owner with `manage_roles` must not be able to
+  // rewrite the role they are assigned to (their permissions are re-read from
+  // the DB on every request, so this would be instant privilege gain), nor
+  // grant permissions above their own set.
+  if (!req.panelUser?.isOwner) {
+    const ownRoleId = req.panelUser?.role?._id || req.panelUser?.role;
+    if (ownRoleId && String(ownRoleId) === String(role._id)) {
+      return next(new AppError("You cannot edit the role you are assigned to.", 403));
+    }
+    if (permissions) {
+      const beyond = permissions.filter((p) => !(req.panelUser?.permissions || []).includes(p));
+      if (beyond.length) {
+        return next(
+          new AppError(`You cannot grant permissions you do not hold: ${beyond.join(", ")}`, 403)
+        );
+      }
+    }
+  }
 
   if (permissions) {
     const invalid = permissions.filter((p) => !PERMISSIONS.includes(p));

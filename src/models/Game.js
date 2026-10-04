@@ -43,6 +43,5 @@ const gameSchema = new mongoose.Schema(
 );
 
 gameSchema.index({ active: 1, sortOrder: 1 });
-gameSchema.index({ slug: 1 });
 
 module.exports = mongoose.model("Game", gameSchema);

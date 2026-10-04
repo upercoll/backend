@@ -38,7 +38,6 @@ const agentStatsSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-agentStatsSchema.index({ agentId: 1 });
 agentStatsSchema.index({ isOnline: 1 });
 
 module.exports = mongoose.model("AgentStats", agentStatsSchema);

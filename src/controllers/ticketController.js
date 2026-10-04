@@ -493,7 +493,12 @@ exports.getTicketStats = catchAsync(async (req, res) => {
 });
 
 exports.deleteTicket = catchAsync(async (req, res, next) => {
-  if (!req.panelUser.isOwner) return next(new AppError("Owner access required", 403));
+  // This route is mounted with `protect, adminOnly` — req.panelUser is NOT set
+  // by that chain, so `req.panelUser.isOwner` threw a TypeError and 500'd for
+  // every caller (the owner included).
+  if (!req.user?.isOwner && req.user?.role !== "admin") {
+    return next(new AppError("Owner access required", 403));
+  }
 
   const ticket = await Ticket.findOne({ ticketId: req.params.ticketId });
   if (!ticket) return next(new AppError("Ticket not found", 404));

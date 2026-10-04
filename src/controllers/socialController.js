@@ -596,13 +596,13 @@ exports.adminSetRate = catchAsync(async (req, res, next) => {
 
   if (rateType === "per_1k" || rateType === "per_view") {
     finalRatePerView = rateType === "per_1k" ? parseFloat(ratePerView) / 1000 : parseFloat(ratePerView);
-    if (!finalRatePerView || finalRatePerView <= 0) {
+    if (!Number.isFinite(finalRatePerView) || finalRatePerView <= 0) {
       return next(new AppError("Rate per view must be greater than 0", 400));
     }
     finalOfferedAmount = parseFloat((finalRatePerView * (sub.views || 0)).toFixed(2));
   } else if (rateType === "per_video" || rateType === "auto") {
     finalOfferedAmount = parseFloat(offeredAmount);
-    if (!finalOfferedAmount || finalOfferedAmount <= 0) {
+    if (!Number.isFinite(finalOfferedAmount) || finalOfferedAmount <= 0) {
       return next(new AppError("Offered amount must be greater than 0", 400));
     }
     finalRatePerView =
@@ -661,14 +661,29 @@ exports.adminUpdateCreator = catchAsync(async (req, res, next) => {
   const { name, socialRateType, socialRate, paymentMethods, requiresPaymentProof } = req.body;
   if (name !== undefined) creator.name = String(name).trim();
   if (socialRateType !== undefined) creator.socialRateType = socialRateType;
-  if (socialRate !== undefined) creator.socialRate = Number(socialRate) || 0;
+  if (socialRate !== undefined) {
+    // Number("Infinity") is finite-false and would poison every derived offer;
+    // the upper bound stops a fat-fingered rate turning into a huge payout.
+    const parsedRate = Number(socialRate);
+    if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 100000) {
+      return next(new AppError("Social rate must be between 0 and 100000", 400));
+    }
+    creator.socialRate = parsedRate;
+  }
   if (paymentMethods !== undefined) creator.paymentMethods = paymentMethods;
   if (requiresPaymentProof !== undefined) creator.requiresPaymentProof = Boolean(requiresPaymentProof);
   await creator.save();
   // A changed agreement applies to currently tracking videos too, so balances
   // never require a manual review/recalculation pass.
   if (socialRateType !== undefined || socialRate !== undefined) {
-    const tracking = await SocialSubmission.find({ collaborator: creator._id, status: { $ne: "paid" } });
+    // Skip anything already paid toward: rewriting offeredAmount there can push
+    // it below the paid amount (creator loses the remainder) or retroactively
+    // inflate a deal that was already accepted.
+    const tracking = await SocialSubmission.find({
+      collaborator: creator._id,
+      status: { $ne: "paid" },
+      paidAmount: { $in: [0, null] },
+    });
     for (const sub of tracking) {
       sub.rateType = creator.socialRateType;
       sub.ratePerView = creator.socialRateType === "per_1k" ? creator.socialRate / 1000 : 0;
@@ -763,11 +778,15 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
   const collab = await Collaborator.findById(req.params.collabId);
   if (!collab) return next(new AppError("Creator not found", 404));
 
-  // Sort oldest first so partial payouts cover the earliest accepted submissions
+  // Only submissions an admin actually ACCEPTED may be paid. The old query took
+  // every status except "paid", so hitting Mark Paid paid out videos nobody had
+  // reviewed (creatorSubmit auto-stamps offeredAmount at submission time), and
+  // because acceptedAt is unset on those docs Mongo sorted them FIRST.
   const acceptedSubs = await SocialSubmission.find({
     collaborator: collab._id,
-    status: { $ne: "paid" },
-  }).sort({ acceptedAt: 1 });
+    status: { $in: ["accepted", "reviewed"] },
+    $expr: { $lt: [{ $ifNull: ["$paidAmount", 0] }, { $ifNull: ["$offeredAmount", 0] }] },
+  }).sort({ acceptedAt: 1, _id: 1 });
 
   if (acceptedSubs.length === 0) {
     return next(new AppError("No accepted submissions to pay out", 400));
@@ -798,6 +817,10 @@ exports.adminMarkPaid = catchAsync(async (req, res, next) => {
     const owing = Math.max(0, (s.offeredAmount || 0) - (s.paidAmount || 0));
     const amount = Number(Math.min(owing, left).toFixed(2));
     if (amount) { allocations.push({ submission: s._id, amount }); left = Number((left - amount).toFixed(2)); }
+  }
+
+  if (allocations.length === 0) {
+    return next(new AppError("Nothing owed on the accepted submissions.", 400));
   }
 
   const payout = await SocialPayout.create({

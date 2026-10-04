@@ -222,20 +222,51 @@ exports.markPaid = catchAsync(async (req, res, next) => {
     const due = Math.max(0, (record.commission || 0) - (record.paidAmount || 0));
     const allocation = Number(Math.min(due, remaining).toFixed(2));
     if (!allocation) continue;
-    record.paidAmount = Number(((record.paidAmount || 0) + allocation).toFixed(2));
-    if (record.paidAmount + 0.001 >= (record.commission || 0)) record.paidOut = true;
-    paidRevenue += (record.orderTotal || 0) * (allocation / (record.commission || 1));
+    const fullyPaid = (record.paidAmount || 0) + allocation + 0.001 >= (record.commission || 0);
+
+    // Compare-and-set instead of read-modify-save. Two concurrent mark-paid
+    // calls (double click, or two admins) used to both read the same unpaid
+    // record and both add their allocation to the same stale paidAmount —
+    // paying double against phantom debt.
+    const applied = await DeliveryRecord.findOneAndUpdate(
+      {
+        _id: record._id,
+        paidOut: false,
+        $or: [{ paidAmount: record.paidAmount || 0 }, { paidAmount: { $exists: false } }],
+      },
+      {
+        $set: {
+          paidAmount: Number(((record.paidAmount || 0) + allocation).toFixed(2)),
+          paidOut: fullyPaid,
+        },
+      },
+      { new: true }
+    );
+    if (!applied) continue; // a concurrent payout claimed this record first
+
+    paidRevenue += (applied.orderTotal || 0) * (allocation / (applied.commission || 1));
     remaining = Number((remaining - allocation).toFixed(2));
     payoutAllocations.push({ record: record._id, amount: allocation });
-    await record.save();
+  }
+
+  if (payoutAllocations.length === 0) {
+    return next(new AppError("Those records were just paid by another payout. Nothing left to pay.", 409));
   }
 
   const remainingRecords = await DeliveryRecord.find({ deliverer: deliverer._id, paidOut: false });
   const remainingTotals = calculateUnpaidDeliveryTotals(remainingRecords);
-  deliverer.totalCommission = Number(remainingTotals.commission.toFixed(2));
-  deliverer.totalRevenue = Number(remainingTotals.revenue.toFixed(2));
-  deliverer.lastPayoutAt = new Date();
-  await deliverer.save();
+  const lastPayoutAt = new Date();
+  const updatedDeliverer = await Deliverer.findByIdAndUpdate(
+    deliverer._id,
+    {
+      $set: {
+        totalCommission: Number(remainingTotals.commission.toFixed(2)),
+        totalRevenue: Number(remainingTotals.revenue.toFixed(2)),
+        lastPayoutAt,
+      },
+    },
+    { new: true }
+  );
 
   const payout = await DelivererPayout.create({
     deliverer: deliverer._id,
@@ -243,7 +274,7 @@ exports.markPaid = catchAsync(async (req, res, next) => {
     revenue: Number(paidRevenue.toFixed(2)),
     deliveryCount: payoutAllocations.length,
     records: payoutAllocations,
-    remainingCommissionAfter: deliverer.totalCommission,
+    remainingCommissionAfter: updatedDeliverer.totalCommission,
     markedPaidBy: req.panelUser?.email || req.panelUser?.name || "",
     notes: req.body?.notes || "",
   });
@@ -253,9 +284,9 @@ exports.markPaid = catchAsync(async (req, res, next) => {
     data: {
       paidRevenue: Number(paidRevenue.toFixed(2)),
       paidCommission: requestedAmount,
-      remainingCommission: deliverer.totalCommission,
-      remainingRevenue: deliverer.totalRevenue,
-      lastPayoutAt: deliverer.lastPayoutAt,
+      remainingCommission: updatedDeliverer.totalCommission,
+      remainingRevenue: updatedDeliverer.totalRevenue,
+      lastPayoutAt,
       payout,
     },
   });

@@ -54,6 +54,32 @@ const PERMISSIONS = [
   "view_tickets",
   "manage_tickets",
   "ticket_agent",
+
+  // ── Previously owner-only. These exist so the owner can actually DELEGATE
+  // customer records, site configuration, commissions and destructive deletes
+  // instead of being the only person who can ever touch them.
+  "view_customers",
+  "manage_customers",
+  "delete_customers",
+
+  "view_settings",
+  "manage_settings",
+  "view_site_modes",
+  "manage_site_modes",
+
+  "view_commissions",
+  "manage_commissions",
+
+  "manage_pod",
+
+  "delete_claims",
+  "delete_deliverers",
+  "delete_stockers",
+
+  // Site-wide announcements + bulk marketing email
+  "view_announcements",
+  "manage_announcements",
+  "send_broadcasts",
 ];
 
 const roleSchema = new mongoose.Schema(

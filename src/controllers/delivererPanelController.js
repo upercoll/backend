@@ -76,6 +76,11 @@ exports.getClaims = catchAsync(async (req, res) => {
 exports.getSession = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId: req.params.roomId }).select("-__v");
   if (!session) return next(new AppError("Session not found", 404));
+  // Same access rule as claimSession — the read used to skip the game check,
+  // so any deliverer could read every customer's chat + contact email.
+  if (!canHandleGame(req.deliverer, session.game)) {
+    return next(new AppError("This claim belongs to a game you are not assigned to", 403));
+  }
   res.json({ success: true, data: { session } });
 });
 
@@ -153,6 +158,17 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
 
   const podNotes = req.body?.notes || "";
 
+  // Atomic status flip. Two concurrent deliver calls could both read
+  // status="active" and both pass the guard above, then BOTH create a
+  // DeliveryRecord and $inc the deliverer's commission for a single delivery.
+  const flipped = await ClaimSession.updateOne(
+    { _id: session._id, status: { $in: ["active", "pending"] } },
+    { $set: { status: "claimed", resolvedAt: new Date() } }
+  );
+  if (flipped.matchedCount === 0) {
+    return next(new AppError("Session is not active", 400));
+  }
+
   session.status = "claimed";
   session.resolvedAt = new Date();
   session.messages.push({
@@ -163,17 +179,28 @@ exports.markDelivered = catchAsync(async (req, res, next) => {
   });
   await session.save();
 
-  // Look up order total for commission calculation
+  // Commission base = what the customer actually kept paid. `pricing.total` is
+  // already net of the promo discount, but a refunded order used to pay full
+  // commission on money that went back to the buyer.
   let orderTotal = 0;
   if (session.orderRef) {
     try {
-      const order = await Order.findOne({ orderNumber: session.orderRef }).select("pricing.total");
-      if (order?.pricing?.total) orderTotal = order.pricing.total;
+      const order = await Order.findOne({ orderNumber: session.orderRef })
+        .select("pricing.total pricing.tax refundAmount status");
+      // Commission is a share of MERCHANDISE revenue. Tax is excluded — paying
+      // a cut on tax the owner has to remit would quietly inflate every payout.
+      if (order && order.status !== "refunded" && order?.pricing?.total) {
+        const tax = Number(order.pricing.tax) || 0;
+        orderTotal = Math.max(
+          0,
+          order.pricing.total - tax - (Number(order.refundAmount) || 0)
+        );
+      }
     } catch {}
   }
 
   const commissionRate = getCommissionRateForGame(deliverer, session.game);
-  const commission = (orderTotal * commissionRate) / 100;
+  const commission = Math.round(orderTotal * commissionRate) / 100;
 
   // Auto-complete the linked order (same as claim:mark_claimed socket handler)
   if (session.orderRef) {
@@ -302,6 +329,12 @@ exports.getOrders = catchAsync(async (req, res) => {
   if (status && ["paid", "delivering", "completed", "cancelled"].includes(status)) {
     filter.status = status;
   }
+  // A deliverer only sees orders for the games they actually handle — the old
+  // query trusted nothing, so any deliverer could paginate the whole order book.
+  const assignedGames = getAssignedGames(req.deliverer);
+  if (assignedGames.length > 0) {
+    filter["items.productSnapshot.game"] = { $in: assignedGames };
+  }
   if (search) {
     filter.$or = [
       { orderNumber: { $regex: search, $options: "i" } },
@@ -312,7 +345,14 @@ exports.getOrders = catchAsync(async (req, res) => {
 
   const skip = (Number(page) - 1) * Number(limit);
   const [orders, total] = await Promise.all([
-    Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    // Never leak transport-level PII — the deliverer needs items/pricing and a
+    // contact handle, not the buyer's IP, user-agent string or street address.
+    Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .select("-ipAddress -userAgent -customer.shippingAddress -customer.billingAddress")
+      .lean(),
     Order.countDocuments(filter),
   ]);
 
@@ -321,7 +361,14 @@ exports.getOrders = catchAsync(async (req, res) => {
 
 // GET /api/deliverer/orders/by-ref/:orderNumber — fetch an order by number for the sidebar
 exports.getOrderByRef = catchAsync(async (req, res, next) => {
-  const order = await Order.findOne({ orderNumber: req.params.orderNumber }).lean();
+  const filter = { orderNumber: req.params.orderNumber };
+  const assignedGames = getAssignedGames(req.deliverer);
+  if (assignedGames.length > 0) {
+    filter["items.productSnapshot.game"] = { $in: assignedGames };
+  }
+  const order = await Order.findOne(filter)
+    .select("-ipAddress -userAgent -customer.shippingAddress -customer.billingAddress")
+    .lean();
   if (!order) return next(new AppError("Order not found", 404));
   res.json({ success: true, data: order });
 });

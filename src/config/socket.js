@@ -43,6 +43,22 @@ function initSocket(server) {
     next();
   });
 
+  // Storefront customer tokens, collaborator tokens and panel tokens are ALL
+  // signed with the same JWT_SECRET, and all three carry an `id`. So
+  // "socket.user.id exists" proved nothing: any logged-in customer could emit
+  // claim:mark_claimed / claim:end / claim:close on any room and flip claims
+  // they have no business touching. Reject the two non-panel identities.
+  const NON_STAFF_TYPES = new Set(["customer", "collaborator"]);
+  const isStaffSocket = (socket) => {
+    const u = socket.user;
+    if (!u) return false;
+    return !NON_STAFF_TYPES.has(String(u.type || "").toLowerCase());
+  };
+  const staffId = (socket) => {
+    if (!isStaffSocket(socket)) return null;
+    return socket.panelUserId || socket.user?.id || socket.user?._id || null;
+  };
+
   io.on("connection", (socket) => {
     const sessionId = socket.handshake.query.sessionId || socket.id;
     logger.info(`Socket connected: ${sessionId}`);
@@ -52,6 +68,21 @@ function initSocket(server) {
     if (socket.user?.role === "admin" || socket.user?.type === "owner" || socket.user?.isOwner === true) {
       socket.join("admin-room");
       logger.info(`Admin joined admin-room: ${socket.user.email}`);
+    }
+
+    // Dedicated room for "an order just came in" alerts, so the notification
+    // reaches everyone who can actually SEE orders (including a team member
+    // with view_orders) without widening admin-room, which carries claim and
+    // proof-of-delivery detail.
+    if (isStaffSocket(socket)) {
+      const perms = socket.user?.permissions || [];
+      const seesOrders =
+        socket.user?.type === "owner" ||
+        socket.user?.role === "admin" ||
+        socket.user?.isOwner === true ||
+        perms.includes("view_orders") ||
+        perms.includes("manage_orders");
+      if (seesOrders) socket.join("order-alerts");
     }
 
     socket.on("user:message", async (data) => {
@@ -130,6 +161,14 @@ function initSocket(server) {
 
     socket.on("claim:agent_join", async ({ roomId, agentName }) => {
       if (!roomId) return;
+      // Joining as the agent means taking ownership of someone's claim. It used
+      // to be completely unauthenticated, so any socket (or a customer with a
+      // store token) could flip a pending claim to "active" and name itself the
+      // assigned agent — the real deliverer then sees it as already handled.
+      if (!isStaffSocket(socket) && !socket.panelUserId) {
+        socket.emit("claim:error", { message: "Not authenticated" });
+        return;
+      }
       socket.join(`claim:${roomId}`);
       socket.claimRoomId = roomId;
 
@@ -183,7 +222,7 @@ function initSocket(server) {
         const session = await ClaimSession.findOne({ roomId });
         if (!session) return;
 
-        const isAgentUser = !!(socket.user || socket.panelUserId);
+        const isAgentUser = isStaffSocket(socket) || !!socket.panelUserId;
         const msgSender = sender === "agent" && isAgentUser ? "agent" : "customer";
         const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : "Customer");
 
@@ -198,7 +237,7 @@ function initSocket(server) {
         let autoClaimed = false;
 
         if (msgSender === "agent" && session.status === "pending") {
-          const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+          const agentId = staffId(socket);
           const agentDisplayName = senderName || socket.agentName || socket.user?.displayName || "Agent";
 
           session.status = "active";
@@ -229,7 +268,7 @@ function initSocket(server) {
         let adminJoinMsg = null;
         if (msgSender === "agent" && !autoClaimed) {
           const assignedId = session.assignedAgent?.userId?.toString();
-          const senderId = (socket.panelUserId || socket.user?.id || socket.user?._id)?.toString();
+          const senderId = (staffId(socket))?.toString();
           const isNotAssignedAgent = !assignedId || !senderId || senderId !== assignedId;
           if (!socket.adminJoinedRooms) socket.adminJoinedRooms = new Set();
           if (isNotAssignedAgent && !socket.adminJoinedRooms.has(roomId)) {
@@ -398,7 +437,7 @@ function initSocket(server) {
     socket.on("claim:end", async ({ roomId }) => {
       if (!roomId) return;
       // Only authenticated agents (panel users or admins) may end a chat.
-      const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+      const agentId = staffId(socket);
       if (!agentId) {
         socket.emit("claim:error", { message: "Not authenticated" });
         return;
@@ -435,7 +474,7 @@ function initSocket(server) {
         const session = await ClaimSession.findOne({ roomId });
         if (!session) return;
 
-        const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+        const agentId = staffId(socket);
         if (!agentId) {
           socket.emit("claim:error", { message: "Not authenticated" });
           return;
@@ -483,7 +522,7 @@ function initSocket(server) {
     socket.on("claim:mark_claimed", async ({ roomId }) => {
       if (!roomId) return;
       // Only authenticated agents (panel users or admins) may mark a claim as delivered.
-      const agentId = socket.panelUserId || socket.user?.id || socket.user?._id;
+      const agentId = staffId(socket);
       if (!agentId) {
         socket.emit("claim:error", { message: "Not authenticated" });
         return;
@@ -599,7 +638,7 @@ function initSocket(server) {
           return;
         }
 
-        const isAgentUser = !!(socket.user || socket.panelUserId);
+        const isAgentUser = isStaffSocket(socket) || !!socket.panelUserId;
         const msgSender = isAgentUser ? "agent" : "customer";
         const name = senderName || (msgSender === "agent" ? (socket.user?.name || "Agent") : ticket.customerName || "Customer");
 

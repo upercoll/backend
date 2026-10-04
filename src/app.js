@@ -26,6 +26,10 @@ const stockerPanelRoutes = require("./routes/stockerPanel");
 const delivererPanelRoutes = require("./routes/delivererPanel");
 const socialsRoutes = require("./routes/socials");
 const ticketRoutes = require("./routes/tickets");
+const siteModeRoutes = require("./routes/siteModes");
+const rewardRoutes = require("./routes/rewards");
+const announcementRoutes = require("./routes/announcements");
+const publicSettingsRoutes = require("./routes/settings");
 
 const app = express();
 
@@ -35,6 +39,7 @@ app.use(mongoSanitize());
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   "http://localhost:5173",
+  "http://localhost:5199",
   "http://localhost:5000",
 ].filter(Boolean);
 
@@ -82,6 +87,10 @@ app.use("/api/stocker", stockerPanelRoutes);
 app.use("/api/deliverer", delivererPanelRoutes);
 app.use("/api/socials", socialsRoutes);
 app.use("/api/tickets", ticketRoutes);
+app.use("/api/site-modes", siteModeRoutes);
+app.use("/api/rewards", rewardRoutes);
+app.use("/api/announcements", announcementRoutes);
+app.use("/api/settings", publicSettingsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });

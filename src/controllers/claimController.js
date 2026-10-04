@@ -214,17 +214,19 @@ exports.createClaim = catchAsync(async (req, res, next) => {
   if (!existingSession && resolvedOrderRef) {
     const completedForOrder = await ClaimSession.findOne({
       orderRef: resolvedOrderRef,
+      contactEmail: emailLower, // never hand another party's session back
       status: { $in: ["claimed", "ended"] },
     }).sort({ updatedAt: -1 });
     if (completedForOrder) existingSession = completedForOrder;
   }
 
-  // Same for pending/active sessions: if an auto-delivery (or manual) session is
-  // already running for this order under ANY email, hand it back — never spawn a
-  // second session for the same order.
+  // Same for pending/active sessions: only reuse a session that belongs to THIS
+  // contact email — matching by orderRef alone leaked the victim's roomId, full
+  // chat transcript and items to anyone who knew the order number.
   if (!existingSession && resolvedOrderRef) {
     const liveForOrder = await ClaimSession.findOne({
       orderRef: resolvedOrderRef,
+      contactEmail: emailLower,
       status: { $in: ["pending", "active"] },
     }).sort({ createdAt: -1 });
     if (liveForOrder) existingSession = liveForOrder;
@@ -484,6 +486,23 @@ exports.createAutoDelivery = catchAsync(async (req, res, next) => {
     return next(new AppError(msg, 402));
   }
 
+  // An order number alone must NOT be enough to start auto delivery. `findPaidOrder`
+  // tries orderNumber first, so without this check anyone could attach a paid
+  // stranger's order to their own Roblox username and get the items gift-delivered
+  // to them. The order must belong to this caller's email or Roblox username.
+  const matchesIdentity =
+    (dbOrder.customer?.email || "").toLowerCase() === emailLower ||
+    (dbOrder.customer?.robloxUsername || "").toLowerCase() ===
+      robloxUsername.trim().toLowerCase();
+  if (!matchesIdentity) {
+    return next(
+      new AppError(
+        "No successful payment found for this email address. Automated delivery can only be started after a payment has been confirmed.",
+        402
+      )
+    );
+  }
+
   const enriched = await enrichItemsFromOrder(dbOrder);
   if (enriched.items.length) resolvedItems = enriched.items;
   if (!resolvedOrderRef && dbOrder.orderNumber) resolvedOrderRef = dbOrder.orderNumber;
@@ -638,7 +657,11 @@ exports.getSessionStatus = catchAsync(async (req, res, next) => {
       robloxUsername: session.robloxUsername,
       robloxUserId: session.robloxUserId || null,
       delivererName: session.delivererAssigned?.name || session.assignedAgent?.name || null,
-      autoDelivery: session.autoDelivery || null,
+      // Whitelisted: never return the whole autoDelivery sub-document (the
+      // schema also holds privateServerUrl).
+      autoDelivery: session.autoDelivery
+        ? { inProgress: !!(session.autoDelivery.delivered || session.items?.length) }
+        : null,
     },
   });
 });
@@ -990,8 +1013,20 @@ exports.listAutoBotLogs = catchAsync(async (req, res, next) => {
 exports.updateUserInfo = catchAsync(async (req, res, next) => {
   const { robloxUsername, contactEmail } = req.body;
   const session = await ClaimSession.findOne({ roomId: req.params.roomId });
+  if (!session) return next(new AppError("Session not found", 404));
   if (session.status !== "pending") {
     return next(new AppError("Cannot update info after agent has joined", 400));
+  }
+
+  // This endpoint is public, and roomIds leak constantly (the public auto-queue
+  // and claim status endpoints both expose them), so it must not be unauthenticated
+  // in effect. Requiring the contact email currently on file proves ownership
+  // without a login — without it, anyone could repoint delivery to their account.
+  const presentedEmail = String(req.body?.currentEmail || req.body?.currentContactEmail || "")
+    .trim()
+    .toLowerCase();
+  if (!presentedEmail || presentedEmail !== (session.contactEmail || "").toLowerCase()) {
+    return next(new AppError("The contact email on file is required to change delivery details.", 403));
   }
 
   const changes = [];
@@ -1054,11 +1089,18 @@ exports.getSession = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId: req.params.roomId }).select("-__v");
   if (!session) return next(new AppError("Session not found", 404));
 
-  const isMonitor = req.panelUser.isOwner || req.panelUser.permissions?.includes("monitor_agents");
-  if (!isMonitor) {
-    const agentGames = req.panelUser.claimGames || [];
-    if (agentGames.length > 0 && session.game && !agentGames.includes(session.game)) {
-      return next(new AppError("You are not authorized to view this claim session", 403));
+  // This route is public (the storefront claim page has no panel session), so
+  // req.panelUser only exists when an agent/admin happens to call it. The
+  // scoping check below must not run unguarded — it used to throw a TypeError
+  // and 500 every anonymous fetch.
+  if (req.panelUser) {
+    const isMonitor =
+      req.panelUser.isOwner || req.panelUser.permissions?.includes("monitor_agents");
+    if (!isMonitor) {
+      const agentGames = req.panelUser.claimGames || [];
+      if (agentGames.length > 0 && session.game && !agentGames.includes(session.game)) {
+        return next(new AppError("You are not authorized to view this claim session", 403));
+      }
     }
   }
 
@@ -1150,7 +1192,7 @@ exports.updateStatus = catchAsync(async (req, res, next) => {
 });
 
 exports.deleteSession = catchAsync(async (req, res, next) => {
-  if (!req.panelUser.isOwner) return next(new AppError("Owner access required", 403));
+  // Access is gated by the `delete_claims` permission on the route.
   const session = await ClaimSession.findOne({ roomId: req.params.roomId });
   if (!session) return next(new AppError("Session not found", 404));
   await session.deleteOne();
@@ -1167,7 +1209,7 @@ exports.deleteSession = catchAsync(async (req, res, next) => {
 });
 
 exports.bulkDeleteClaimed = catchAsync(async (req, res, next) => {
-  if (!req.panelUser.isOwner) return next(new AppError("Owner access required", 403));
+  // Access is gated by the `delete_claims` permission on the route.
   const { email, roomIds } = req.body;
 
   let filter = {};

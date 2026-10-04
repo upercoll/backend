@@ -4,6 +4,7 @@ const Product = require("../models/Product");
 const Category = require("../models/Category");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const { NET_REVENUE } = require("../utils/revenue");
 
 exports.getDashboard = catchAsync(async (req, res) => {
   const [
@@ -23,8 +24,8 @@ exports.getDashboard = catchAsync(async (req, res) => {
     Order.countDocuments({ "payment.status": "succeeded" }),
     Order.countDocuments({ status: "pending" }),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded" } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" }, count: { $sum: 1 } } },
+      { $match: { "payment.status": "succeeded", status: { $ne: "refunded" } } },
+      { $group: { _id: null, total: { $sum: NET_REVENUE }, count: { $sum: 1 } } },
     ]),
     Product.find({ active: true }).sort("-salesCount").limit(5).select("name salesCount price game"),
   ]);

@@ -6,14 +6,14 @@ const TeamMember = require("../models/TeamMember");
 const AgentStats = require("../models/AgentStats");
 const catchAsync = require("../utils/catchAsync");
 
-const PAID_STATUSES = ["paid", "delivering", "completed", "refunded", "partially_refunded"];
-
-const PAID_FILTER = {
-  $or: [
-    { "payment.status": "succeeded" },
-    { status: { $in: PAID_STATUSES } },
-  ],
-};
+const {
+  PAID_STATUSES,
+  PAID_FILTER,
+  NET_REVENUE,
+  REVENUE_FILTER,
+  NET_ITEM_STAGES,
+  NET_ITEM_VALUE,
+} = require("../utils/revenue");
 
 exports.getDashboard = catchAsync(async (req, res) => {
   const now = new Date();
@@ -37,16 +37,16 @@ exports.getDashboard = catchAsync(async (req, res) => {
     onlineAgents,
   ] = await Promise.all([
     Order.aggregate([
-      { $match: PAID_FILTER },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+      { $match: REVENUE_FILTER },
+      { $group: { _id: null, total: { $sum: NET_REVENUE } } },
     ]),
     Order.aggregate([
-      { $match: { ...PAID_FILTER, createdAt: { $gte: startOfMonth } } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+      { $match: { ...REVENUE_FILTER, createdAt: { $gte: startOfMonth } } },
+      { $group: { _id: null, total: { $sum: NET_REVENUE } } },
     ]),
     Order.aggregate([
-      { $match: { ...PAID_FILTER, createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+      { $match: { ...REVENUE_FILTER, createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
+      { $group: { _id: null, total: { $sum: NET_REVENUE } } },
     ]),
     Order.countDocuments({ ...PAID_FILTER, createdAt: { $gte: startOfToday } }),
     Order.countDocuments({ ...PAID_FILTER, createdAt: { $gte: startOfMonth } }),
@@ -97,7 +97,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
     const data = await Order.aggregate([
       {
         $match: {
-          ...PAID_FILTER,
+          ...REVENUE_FILTER,
           createdAt: {
             $gte: new Date(targetYear, 0, 1),
             $lt: new Date(targetYear + 1, 0, 1),
@@ -107,9 +107,9 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
       {
         $group: {
           _id: { month: { $month: "$createdAt" } },
-          revenue: { $sum: "$pricing.total" },
+          revenue: { $sum: NET_REVENUE },
           orders: { $sum: 1 },
-          tax: { $sum: { $multiply: ["$pricing.total", 0.0] } },
+          tax: { $sum: { $multiply: [NET_REVENUE, 0.0] } },
         },
       },
       { $sort: { "_id.month": 1 } },
@@ -139,7 +139,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
   const data = await Order.aggregate([
     {
       $match: {
-        ...PAID_FILTER,
+        ...REVENUE_FILTER,
         createdAt: { $gte: days[0], $lte: now },
       },
     },
@@ -150,7 +150,7 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
           month: { $month: "$createdAt" },
           day: { $dayOfMonth: "$createdAt" },
         },
-        revenue: { $sum: "$pricing.total" },
+        revenue: { $sum: NET_REVENUE },
         orders: { $sum: 1 },
       },
     },
@@ -184,11 +184,12 @@ exports.getOrdersByGame = catchAsync(async (req, res) => {
 
   const data = await Order.aggregate([
     { $match: STRICT_PAID },
+    ...NET_ITEM_STAGES,
     { $unwind: "$items" },
     {
       $group: {
         _id: "$items.productSnapshot.game",
-        revenue: { $sum: "$items.totalPrice" },
+        revenue: { $sum: NET_ITEM_VALUE },
         orders: { $sum: 1 },
       },
     },
@@ -200,7 +201,8 @@ exports.getOrdersByGame = catchAsync(async (req, res) => {
 
 exports.getTopProducts = catchAsync(async (req, res) => {
   const data = await Order.aggregate([
-    { $match: PAID_FILTER },
+    { $match: REVENUE_FILTER },
+    ...NET_ITEM_STAGES,
     { $unwind: "$items" },
     {
       $group: {
@@ -210,7 +212,7 @@ exports.getTopProducts = catchAsync(async (req, res) => {
         imageUrl: { $first: "$items.productSnapshot.imageUrl" },
         gradient: { $first: "$items.productSnapshot.gradient" },
         totalSold: { $sum: "$items.quantity" },
-        revenue: { $sum: "$items.totalPrice" },
+        revenue: { $sum: NET_ITEM_VALUE },
       },
     },
     { $sort: { revenue: -1 } },
@@ -251,12 +253,12 @@ exports.getSalesSummary = catchAsync(async (req, res) => {
 
   const [current, previous, statusBreakdown] = await Promise.all([
     Order.aggregate([
-      { $match: { ...PAID_FILTER, createdAt: { $gte: startDate } } },
-      { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 }, avgOrder: { $avg: "$pricing.total" } } },
+      { $match: { ...REVENUE_FILTER, createdAt: { $gte: startDate } } },
+      { $group: { _id: null, revenue: { $sum: NET_REVENUE }, orders: { $sum: 1 }, avgOrder: { $avg: NET_REVENUE } } },
     ]),
     Order.aggregate([
-      { $match: { ...PAID_FILTER, createdAt: { $gte: prevStart, $lte: prevEnd } } },
-      { $group: { _id: null, revenue: { $sum: "$pricing.total" }, orders: { $sum: 1 } } },
+      { $match: { ...REVENUE_FILTER, createdAt: { $gte: prevStart, $lte: prevEnd } } },
+      { $group: { _id: null, revenue: { $sum: NET_REVENUE }, orders: { $sum: 1 } } },
     ]),
     Order.aggregate([
       { $match: { createdAt: { $gte: startDate } } },
@@ -329,10 +331,11 @@ exports.getStockerCommissions = catchAsync(async (req, res) => {
       let totalRevenue = 0;
       for (const p of products) {
         const sales = await Order.aggregate([
-          { $match: { ...PAID_FILTER, createdAt: { $gte: startDate }, "items.product": p._id } },
+          { $match: { ...REVENUE_FILTER, createdAt: { $gte: startDate }, "items.product": p._id } },
+          ...NET_ITEM_STAGES,
           { $unwind: "$items" },
           { $match: { "items.product": p._id } },
-          { $group: { _id: null, revenue: { $sum: "$items.totalPrice" } } },
+          { $group: { _id: null, revenue: { $sum: NET_ITEM_VALUE } } },
         ]);
         totalRevenue += sales[0]?.revenue || 0;
       }

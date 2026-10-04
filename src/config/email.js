@@ -102,7 +102,7 @@ async function sendPasswordEmail({ to, password, panelUrl }) {
   }
 }
 
-async function sendOrderConfirmationEmail({ to, orderNumber, items, total, robloxUsername, claimUrl }) {
+async function sendOrderConfirmationEmail({ to, orderNumber, items, total, robloxUsername, claimUrl, tax = 0, taxLabel = "" }) {
   if (!process.env.RESEND_API_KEY) {
     logger.warn("RESEND_API_KEY not set — skipping order confirmation email");
     return;
@@ -153,6 +153,10 @@ async function sendOrderConfirmationEmail({ to, orderNumber, items, total, roblo
               </thead>
               <tbody>${itemRows}</tbody>
               <tfoot>
+                ${Number(tax) > 0 ? `<tr>
+                  <td colspan="2" style="padding-top:12px;color:#94a3b8;font-size:13px">${taxLabel || "Sales Tax"}</td>
+                  <td style="padding-top:12px;color:#94a3b8;font-size:13px;text-align:right">$${Number(tax).toFixed(2)}</td>
+                </tr>` : ""}
                 <tr>
                   <td colspan="2" style="padding-top:12px;font-weight:700;color:#e2e8f0;font-size:15px">Total</td>
                   <td style="padding-top:12px;font-weight:800;color:#4ade80;font-size:15px;text-align:right">$${Number(total).toFixed(2)}</td>
@@ -432,6 +436,87 @@ async function sendSocialInviteEmail({ to, inviteUrl, name, inviterName }) {
   }
 }
 
+
+/**
+ * Branded HTML wrapper for owner broadcasts.
+ *
+ * Deliberately table/inline-styled: email clients strip <style> blocks and
+ * have no flexbox, so the layout is built from nested tables with hard-coded
+ * colours. Flat fills only — no CSS gradients (they render inconsistently and
+ * the brand is built on flat colour blocking).
+ */
+function broadcastEmailHtml({ subject, body, promoCode, ctaLabel, ctaUrl }) {
+  const frontendUrl = process.env.FRONTEND_URL || "https://rbstars.gg";
+  const escape = (s) =>
+    String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+  const paragraphs = escape(body)
+    .split(/\n{2,}/)
+    .map((chunk) => `<p style="margin:0 0 16px;color:#303030;font-size:15px;line-height:1.65">${chunk.replace(/\n/g, "<br/>")}</p>`)
+    .join("");
+
+  const codeBlock = promoCode
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 24px"><tr><td align="center">
+         <table role="presentation" cellpadding="0" cellspacing="0" style="background:#005bd3;border-radius:8px">
+           <tr><td style="padding:14px 28px">
+             <span style="color:#ffffff;font-family:'SFMono-Regular',Menlo,monospace;font-size:22px;font-weight:700;letter-spacing:.08em">${escape(promoCode)}</span>
+           </td></tr>
+         </table>
+         <p style="margin:10px 0 0;color:#616161;font-size:12px">Use this code at checkout</p>
+       </td></tr></table>`
+    : "";
+
+  const button = ctaLabel && ctaUrl
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 28px"><tr><td align="center">
+         <a href="${escape(ctaUrl.startsWith("http") ? ctaUrl : frontendUrl + "/" + ctaUrl.replace(/^\//, ""))}"
+            style="background:#303030;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:14px 30px;border-radius:8px;display:inline-block">
+            ${escape(ctaLabel)}
+         </a>
+       </td></tr></table>`
+    : "";
+
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#f1f2f3">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f2f3;padding:32px 16px">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e3e3e3;border-radius:12px;overflow:hidden">
+        <tr><td style="background:#131313;padding:20px 28px">
+          <span style="color:#ffffff;font-size:18px;font-weight:800;letter-spacing:-.01em">RBstars</span>
+        </td></tr>
+        <tr><td style="padding:28px">
+          <h1 style="margin:0 0 16px;color:#131313;font-size:22px;font-weight:800;line-height:1.25">${escape(subject)}</h1>
+          ${paragraphs}
+          ${codeBlock}
+          ${button}
+        </td></tr>
+        <tr><td style="padding:20px 28px;border-top:1px solid #e3e3e3;color:#8a8a8a;font-size:12px;line-height:1.6">
+          You are receiving this because you have an account at
+          <a href="${frontendUrl}" style="color:#616161">${frontendUrl.replace(/^https?:\/\//, "")}</a>.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table></body></html>`;
+}
+
+/**
+ * Sends one broadcast email. Throws on failure so the caller can count it —
+ * callers (announcementController) track per-recipient success/failure.
+ */
+async function sendBroadcastEmail({ to, subject, body, promoCode, ctaLabel, ctaUrl }) {
+  if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is not configured");
+  const resend = getResend();
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to,
+    subject: String(subject || "").slice(0, 200),
+    html: broadcastEmailHtml({ subject, body, promoCode, ctaLabel, ctaUrl }),
+  });
+  if (error) throw new Error(error.message || "Resend rejected the message");
+  return true;
+}
+
 module.exports = {
   sendInviteEmail,
   sendVerificationEmail,
@@ -443,4 +528,6 @@ module.exports = {
   sendCollabInviteEmail,
   sendCollabVerificationEmail,
   sendSocialInviteEmail,
+  sendBroadcastEmail,
+  broadcastEmailHtml,
 };

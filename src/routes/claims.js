@@ -3,6 +3,7 @@ const ctrl = require("../controllers/claimController");
 const { protect, adminOnly } = require("../middleware/auth");
 const rateLimit = require("express-rate-limit");
 const { upload } = require("../config/r2");
+const { withRoomLock } = require("../utils/roomLock");
 
 const claimCreateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -31,8 +32,15 @@ router.post("/auto", claimCreateLimiter, ctrl.createAutoDelivery);
 // NOTE: must be registered BEFORE the /:roomId routes or "auto-queue" would
 // be captured as a roomId.
 router.get("/auto-queue", autoQueueLimiter, ctrl.getAutoQueue);
-router.post("/auto/:roomId/claim", autoClaimLimiter, ctrl.claimAutoSession);
-router.post("/auto/:roomId/deliver", autoClaimLimiter, ctrl.deliverAutoSession);
+// Both handlers below do unguarded read-modify-write on the same session
+// document, so serialise them per room — two bot accounts hitting one order
+// concurrently could otherwise double-reserve or double-credit quantities.
+router.post("/auto/:roomId/claim", autoClaimLimiter, (req, res, next) =>
+  withRoomLock(req.params.roomId, () => ctrl.claimAutoSession(req, res, next))
+);
+router.post("/auto/:roomId/deliver", autoClaimLimiter, (req, res, next) =>
+  withRoomLock(req.params.roomId, () => ctrl.deliverAutoSession(req, res, next))
+);
 router.post("/auto/log", autoClaimLimiter, ctrl.logBotEvent);
 router.get("/admin/auto-logs", protect, adminOnly, ctrl.listAutoBotLogs);
 

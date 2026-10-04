@@ -101,6 +101,28 @@ exports.updateMember = catchAsync(async (req, res, next) => {
 
   const { roleId, claimGames, claimCategories, active } = req.body;
 
+  // Self-escalation guards. A member holding only invite_team / edit_team could
+  // otherwise invite their own address with the top role, or PATCH themselves
+  // into it — one hop away from full panel takeover.
+  if (!req.panelUser?.isOwner) {
+    const selfId = req.panelUser?.id;
+    if (selfId && String(member._id) === String(selfId)) {
+      return next(new AppError("You cannot edit your own team account", 403));
+    }
+    if (roleId) {
+      const targetRole = await Role.findById(roleId).select("permissions");
+      if (!targetRole || !targetRole.active) return next(new AppError("Role not found", 404));
+      const beyond = (targetRole.permissions || []).filter(
+        (p) => !(req.panelUser.permissions || []).includes(p)
+      );
+      if (beyond.length) {
+        return next(
+          new AppError(`You cannot assign a role with permissions you do not hold: ${beyond.join(", ")}`, 403)
+        );
+      }
+    }
+  }
+
   if (roleId) {
     const role = await Role.findById(roleId);
     if (!role || !role.active) return next(new AppError("Role not found", 404));

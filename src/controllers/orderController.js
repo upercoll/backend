@@ -2,6 +2,7 @@ const Order = require("../models/Order");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const APIFeatures = require("../utils/apiFeatures");
+const { NET_REVENUE } = require("../utils/revenue");
 
 exports.getByOrderNumber = catchAsync(async (req, res, next) => {
   const order = await Order.findOne({
@@ -106,8 +107,8 @@ exports.getStats = catchAsync(async (req, res) => {
     Order.countDocuments(),
     Order.countDocuments({ status: "paid" }),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded" } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+      { $match: { "payment.status": "succeeded", status: { $ne: "refunded" } } },
+      { $group: { _id: null, total: { $sum: NET_REVENUE } } },
     ]),
     Order.find()
       .sort("-createdAt")

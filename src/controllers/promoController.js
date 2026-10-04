@@ -107,6 +107,20 @@ exports.update = catchAsync(async (req, res, next) => {
   const allowed = ["description", "discountType", "discountValue", "minOrderValue", "maxUses", "maxUsesPerUser", "startsAt", "expiresAt", "active"];
   const update = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
 
+  // create() rejects percent codes over 100 but update() did not, so an admin
+  // edit could set 500% — validate() then returns a discount bigger than the
+  // order total. Re-check against the post-update discountType.
+  const existing = await PromoCode.findById(req.params.id).select("discountType").lean();
+  if (!existing) return next(new AppError("Promo code not found", 404));
+  const nextType = update.discountType || existing.discountType;
+  const nextValue = update.discountValue;
+  if (nextType === "percent" && nextValue !== undefined) {
+    const pct = Number(nextValue);
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+      return next(new AppError("Percentage discount must be between 0 and 100", 400));
+    }
+  }
+
   const promo = await PromoCode.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
   if (!promo) return next(new AppError("Promo code not found", 404));
   res.json({ success: true, data: promo });

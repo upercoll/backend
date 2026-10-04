@@ -131,7 +131,8 @@ exports.inviteStocker = catchAsync(async (req, res, next) => {
     inviteToken: hashedToken,
     inviteExpiry: new Date(Date.now() + 72 * 60 * 60 * 1000),
     status: "invited",
-    commissionRate: commissionRate || 10,
+    // `|| 10` would silently turn a deliberate 0% into 10%.
+    commissionRate: commissionRate === undefined ? 10 : Number(commissionRate),
     games: games || [],
   });
 
@@ -158,7 +159,13 @@ exports.updateStocker = catchAsync(async (req, res, next) => {
   const { name, status, commissionRate, games, cryptoAddress, cryptoNetwork } = req.body;
   if (name !== undefined) stocker.name = name;
   if (status) stocker.status = status;
-  if (commissionRate !== undefined) stocker.commissionRate = commissionRate;
+  if (commissionRate !== undefined) {
+    const rate = Number(commissionRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      return next(new AppError("Commission rate must be between 0 and 100", 400));
+    }
+    stocker.commissionRate = rate;
+  }
   if (games) stocker.games = games;
   if (cryptoAddress !== undefined) stocker.cryptoAddress = cryptoAddress;
   if (cryptoNetwork !== undefined) stocker.cryptoNetwork = cryptoNetwork;
@@ -238,9 +245,15 @@ exports.markStocked = catchAsync(async (req, res, next) => {
     item.soldQuantity = 0;
   }
 
-  // Commission is calculated on store price, not the stocker's custom sale price
+  // Commission is calculated on the AGREED store price only.
+  //
+  // This used to be `item.storePrice || item.salePrice` — a `||` fallback means
+  // a product priced 0 fell through to `salePrice`, which is the number the
+  // STOCKER typed into their own request. That let a stocker set their own
+  // commission base by submitting a zero-priced product with an inflated
+  // custom price. Never fall back to the client-supplied value.
   const storeBasedTotal = request.items.reduce(
-    (sum, item) => sum + (item.storePrice || item.salePrice || 0) * (item.quantity || 1),
+    (sum, item) => sum + (Number(item.storePrice) || 0) * (item.quantity || 1),
     0
   );
   const commission = (storeBasedTotal * (request.stocker?.commissionRate || 0)) / 100;

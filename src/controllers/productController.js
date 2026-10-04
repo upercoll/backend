@@ -21,6 +21,40 @@ function parseArrayField(val) {
   return undefined;
 }
 
+// Multipart sends objects/arrays as JSON-encoded strings. Parse them back and
+// drop anything that doesn't match the expected shape.
+function parseJsonField(val) {
+  if (val == null || val === "") return undefined;
+  if (typeof val !== "string") return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeNotice(val) {
+  const notice = parseJsonField(val);
+  if (!notice || typeof notice !== "object" || Array.isArray(notice)) return undefined;
+  const text = typeof notice.text === "string" ? notice.text.trim().slice(0, 1000) : "";
+  return { text, required: notice.required === true || notice.required === "true" };
+}
+
+function sanitizeVariations(val) {
+  const variations = parseJsonField(val);
+  if (!Array.isArray(variations)) return undefined;
+  return variations
+    .filter((v) => v && typeof v === "object")
+    .map((v) => ({
+      name: typeof v.name === "string" ? v.name.trim().slice(0, 80) : "",
+      options: Array.isArray(v.options)
+        ? v.options.filter((o) => typeof o === "string" && o.trim()).map((o) => o.trim().slice(0, 80)).slice(0, 30)
+        : [],
+    }))
+    .filter((v) => v.name && v.options.length > 0)
+    .slice(0, 10);
+}
+
 exports.getAll = catchAsync(async (req, res) => {
   const features = new APIFeatures(Product.find({ active: true }), req.query)
     .filter()
@@ -137,6 +171,12 @@ exports.create = catchAsync(async (req, res, next) => {
   if (images) req.body.images = images;
   const features = parseArrayField(req.body.features);
   if (features) req.body.features = features;
+  const notice = sanitizeNotice(req.body.notice);
+  if (notice !== undefined) req.body.notice = notice;
+  else delete req.body.notice;
+  const variations = sanitizeVariations(req.body.variations);
+  if (variations !== undefined) req.body.variations = variations;
+  else delete req.body.variations;
   if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
 
   const product = await Product.create(req.body);
@@ -148,6 +188,10 @@ exports.update = catchAsync(async (req, res, next) => {
   if (images) req.body.images = images;
   const features = parseArrayField(req.body.features);
   if (features) req.body.features = features;
+  // Present-but-unparseable means "cleared in the admin form" — reset to the
+  // empty default rather than silently keeping the old value.
+  if ("notice" in req.body) req.body.notice = sanitizeNotice(req.body.notice) || { text: "", required: false };
+  if ("variations" in req.body) req.body.variations = sanitizeVariations(req.body.variations) || [];
   if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
 
   const product = await Product.findByIdAndUpdate(req.params.id, req.body, {

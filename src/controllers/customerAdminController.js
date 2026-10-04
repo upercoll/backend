@@ -2,6 +2,7 @@ const Customer = require("../models/Customer");
 const Order = require("../models/Order");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
+const { NET_SPENT } = require("../utils/revenue");
 
 exports.listCustomers = catchAsync(async (req, res) => {
   const { page = 1, limit = 20, search, active } = req.query;
@@ -26,8 +27,8 @@ exports.listCustomers = catchAsync(async (req, res) => {
     customers.map(async (c) => {
       const orderCount = await Order.countDocuments({ "customer.email": c.email });
       const spending = await Order.aggregate([
-        { $match: { "customer.email": c.email, "payment.status": "succeeded" } },
-        { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+        { $match: { "customer.email": c.email, "payment.status": "succeeded", status: { $ne: "refunded" } } },
+        { $group: { _id: null, total: { $sum: NET_SPENT } } },
       ]);
       return {
         ...c.toSafeObject(),
@@ -50,8 +51,8 @@ exports.getCustomer = catchAsync(async (req, res, next) => {
   const [orders, totalSpent] = await Promise.all([
     Order.find({ "customer.email": customer.email }).sort({ createdAt: -1 }).limit(20),
     Order.aggregate([
-      { $match: { "customer.email": customer.email, "payment.status": "succeeded" } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } },
+      { $match: { "customer.email": customer.email, "payment.status": "succeeded", status: { $ne: "refunded" } } },
+      { $group: { _id: null, total: { $sum: NET_SPENT } } },
     ]),
   ]);
 
@@ -85,8 +86,8 @@ exports.getCustomerStats = catchAsync(async (req, res) => {
     Customer.countDocuments({ active: { $ne: false } }),
     Customer.countDocuments({ createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) } }),
     Order.aggregate([
-      { $match: { "payment.status": "succeeded" } },
-      { $group: { _id: "$customer.email", total: { $sum: "$pricing.total" }, orders: { $sum: 1 }, robloxUsername: { $first: "$customer.robloxUsername" } } },
+      { $match: { "payment.status": "succeeded", status: { $ne: "refunded" } } },
+      { $group: { _id: "$customer.email", total: { $sum: NET_SPENT }, orders: { $sum: 1 }, robloxUsername: { $first: "$customer.robloxUsername" } } },
       { $sort: { total: -1 } },
       { $limit: 5 },
     ]),
