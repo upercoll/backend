@@ -30,6 +30,8 @@ const siteModeRoutes = require("./routes/siteModes");
 const rewardRoutes = require("./routes/rewards");
 const announcementRoutes = require("./routes/announcements");
 const publicSettingsRoutes = require("./routes/settings");
+const publicSiteContentRoutes = require("./routes/siteContentPublic");
+const publicStatsRoutes = require("./routes/publicStats");
 
 const app = express();
 
@@ -91,6 +93,8 @@ app.use("/api/site-modes", siteModeRoutes);
 app.use("/api/rewards", rewardRoutes);
 app.use("/api/announcements", announcementRoutes);
 app.use("/api/settings", publicSettingsRoutes);
+app.use("/api/site-content", publicSiteContentRoutes);
+app.use("/api/stats", publicStatsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
