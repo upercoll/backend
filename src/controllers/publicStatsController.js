@@ -1,5 +1,6 @@
 const Product = require("../models/Product");
 const Order = require("../models/Order");
+const Customer = require("../models/Customer");
 const catchAsync = require("../utils/catchAsync");
 
 /* Live storefront counters (the Home page stats band).
@@ -8,7 +9,9 @@ const catchAsync = require("../utils/catchAsync");
                          counted (products set to "unlimited" have no real
                          number to add, so they are skipped rather than guessed).
      • itemsSold       — item quantity across orders that were actually paid.
-     • customersServed — distinct buyer emails on those same orders.
+     • customersServed — active customer accounts, deliberately the SAME figure
+                         GET /api/settings/public-stats reports as `customers`
+                         so the two never disagree on the storefront.
    Cancelled and refunded orders are excluded so a refund never inflates a
    number. Cached in-process for a few minutes: this is unauthenticated and
    runs on every page load. */
@@ -29,13 +32,13 @@ async function computeStats() {
       { $unwind: "$items" },
       { $group: { _id: null, total: { $sum: "$items.quantity" } } },
     ]),
-    Order.distinct("customer.email", { status: { $in: PAID } }),
+    Customer.countDocuments({ active: true }),
   ]);
 
   return {
     itemsInStock: Math.max(0, Math.round(stockAgg[0]?.total || 0)),
     itemsSold: Math.max(0, Math.round(soldAgg[0]?.total || 0)),
-    customersServed: Math.max(0, customers.length),
+    customersServed: Math.max(0, Number(customers) || 0),
   };
 }
 
