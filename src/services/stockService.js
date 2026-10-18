@@ -27,18 +27,17 @@ async function addStock(productId, quantity) {
 async function removeStock(productId, quantity) {
   if (!finiteQuantity(quantity)) throw new Error("Sale quantity must be a positive whole number");
 
+  /* onHand is the source of truth (see addStock): guard on it alone. `stock`
+     still moves with every sale, but it is floored at 0 rather than required
+     to be high enough — a product edited by hand in admin (stock=0 while
+     onHand=14) used to fail this lookup, which rolled the order back and
+     refunded money that had already been taken. */
   const product = await Product.findOneAndUpdate(
-    {
-      _id: productId,
-      $and: [
-        { $or: [{ stock: -1 }, { stock: { $gte: quantity } }] },
-        { $or: [{ onHand: -1 }, { onHand: { $gte: quantity } }] },
-      ],
-    },
+    { _id: productId, $or: [{ onHand: -1 }, { onHand: { $gte: quantity } }] },
     [
       {
         $set: {
-          stock: { $cond: [{ $lt: ["$stock", 0] }, -1, { $subtract: ["$stock", quantity] }] },
+          stock: { $cond: [{ $lt: ["$stock", 0] }, -1, { $max: [0, { $subtract: ["$stock", quantity] }] }] },
           onHand: { $cond: [{ $lt: ["$onHand", 0] }, -1, { $subtract: ["$onHand", quantity] }] },
           salesCount: { $add: [{ $ifNull: ["$salesCount", 0] }, quantity] },
         },

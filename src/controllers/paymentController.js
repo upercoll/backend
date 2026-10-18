@@ -39,9 +39,18 @@ async function resolveCartItems(cartItems) {
 
     const qty = Math.max(1, parseInt(cartItem.quantity) || 1);
 
-    if (product.stock !== -1 && qty > product.stock) {
-      if (product.stock <= 0) throw new AppError(`"${product.name}" is out of stock`, 400);
-      throw new AppError(`Only ${product.stock} unit(s) of "${product.name}" available`, 400);
+    /* onHand is the live physical count: services/stockService.js decrements
+       it when a sale is finalised and stockers refill it. `stock` is the
+       older field — also auto-maintained, but still editable by hand in
+       admin, so it drifts (some products sit at stock=0 with onHand=14).
+       Checking `stock` alone refused orders the product page had just
+       offered as available. Same rule the stocker panel already uses. */
+    const available =
+      typeof product.onHand === "number" && product.onHand >= 0 ? product.onHand : product.stock;
+
+    if (typeof available === "number" && available !== -1 && qty > available) {
+      if (available <= 0) throw new AppError(`"${product.name}" is out of stock`, 400);
+      throw new AppError(`Only ${available} unit(s) of "${product.name}" available`, 400);
     }
     const unitPrice = product.price;
     const lineTotal = unitPrice * qty;
