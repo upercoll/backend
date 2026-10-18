@@ -10,7 +10,7 @@ const { NET_REVENUE } = require("../utils/revenue");
    id), and joined to the buyer's claim session by orderRef so the storefront
    can show delivery progress and link the claim chat. */
 exports.getMyOrders = catchAsync(async (req, res) => {
-  const email = String(req.user?.email || "").toLowerCase().trim();
+  const email = String(req.customer?.email || "").toLowerCase().trim();
   if (!email) return res.status(400).json({ success: false, message: "This account has no email on file" });
 
   const orders = await Order.find({ "customer.email": email })

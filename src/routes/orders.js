@@ -1,11 +1,12 @@
 const router = require("express").Router();
 const ctrl = require("../controllers/orderController");
 const { protect, adminOnly, supportOrAdmin } = require("../middleware/auth");
+const { protectCustomer } = require("../middleware/customerAuth");
 
 router.get("/track/:orderNumber", ctrl.getByOrderNumber);
 
 /* Buyer's own orders — before /:id so "my" is never read as an id. */
-router.get("/my", protect, ctrl.getMyOrders);
+router.get("/my", protectCustomer, ctrl.getMyOrders);
 
 router.get("/", protect, supportOrAdmin, ctrl.getAll);
 router.get("/stats", protect, supportOrAdmin, ctrl.getStats);
