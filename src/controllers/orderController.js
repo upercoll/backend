@@ -1,8 +1,71 @@
 const Order = require("../models/Order");
+const ClaimSession = require("../models/ClaimSession");
 const AppError = require("../utils/AppError");
 const catchAsync = require("../utils/catchAsync");
 const APIFeatures = require("../utils/apiFeatures");
 const { NET_REVENUE } = require("../utils/revenue");
+
+/* The signed-in buyer's own orders — the only order listing a customer can
+   see. Matched on the email the order was placed with (orders carry no user
+   id), and joined to the buyer's claim session by orderRef so the storefront
+   can show delivery progress and link the claim chat. */
+exports.getMyOrders = catchAsync(async (req, res) => {
+  const email = String(req.user?.email || "").toLowerCase().trim();
+  if (!email) return res.status(400).json({ success: false, message: "This account has no email on file" });
+
+  const orders = await Order.find({ "customer.email": email })
+    .sort({ createdAt: -1 })
+    .limit(60)
+    .populate("items.product", "imageUrl")
+    .lean();
+
+  const refs = orders.map((o) => o.orderNumber).filter(Boolean);
+  const sessions = refs.length
+    ? await ClaimSession.find({ orderRef: { $in: refs } }).sort({ createdAt: -1 }).lean()
+    : [];
+  const byRef = new Map();
+  for (const s of sessions) if (s.orderRef && !byRef.has(s.orderRef)) byRef.set(s.orderRef, s);
+
+  const shaped = orders.map((o) => {
+    const claim = byRef.get(o.orderNumber) || null;
+    const claimed = claim ? claim.items.reduce((n, it) => n + (it.delivered || 0), 0) : 0;
+    const claimTotal = claim ? claim.items.reduce((n, it) => n + (it.quantity || 0), 0) : 0;
+    return {
+      orderNumber: o.orderNumber,
+      createdAt: o.createdAt,
+      status: o.status,
+      total: o.pricing?.total ?? o.totalPrice ?? 0,
+      robloxUsername: o.customer?.robloxUsername || "",
+      items: (o.items || []).map((it) => ({
+        name: it.productSnapshot?.name || it.product?.name || "Item",
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        imageUrl: it.product?.imageUrl || null,
+        game: it.productSnapshot?.game || null,
+      })),
+      claim: claim
+        ? { roomId: claim.roomId, status: claim.status, mode: claim.mode, claimed, total: claimTotal }
+        : null,
+    };
+  });
+
+  const isActive = (o) =>
+    ["pending", "paid", "delivering"].includes(o.status) ||
+    (o.claim && ["pending", "active"].includes(o.claim.status));
+  const isDone = (o) => o.status === "completed" || o.claim?.status === "claimed";
+
+  res.status(200).json({
+    success: true,
+    data: {
+      orders: shaped,
+      summary: {
+        active: shaped.filter(isActive).length,
+        completed: shaped.filter(isDone).length,
+        total: shaped.length,
+      },
+    },
+  });
+});
 
 exports.getByOrderNumber = catchAsync(async (req, res, next) => {
   const order = await Order.findOne({

@@ -641,7 +641,7 @@ exports.createAutoDelivery = catchAsync(async (req, res, next) => {
  */
 exports.getSessionStatus = catchAsync(async (req, res, next) => {
   const session = await ClaimSession.findOne({ roomId: req.params.roomId }).select(
-    "roomId status mode items game orderRef robloxUsername robloxUserId delivererAssigned autoDelivery updatedAt"
+    "roomId status mode items game orderRef robloxUsername robloxUserId delivererAssigned assignedAgent autoDelivery updatedAt messages"
   );
   if (!session) return next(new AppError("Session not found", 404));
 
@@ -657,6 +657,17 @@ exports.getSessionStatus = catchAsync(async (req, res, next) => {
       robloxUsername: session.robloxUsername,
       robloxUserId: session.robloxUserId || null,
       delivererName: session.delivererAssigned?.name || session.assignedAgent?.name || null,
+      /* Chat transcript for the deep-link flow (My Orders -> claim chat).
+         roomId is an unguessable UUID and this endpoint already returns the
+         session's robloxUsername + orderRef, so the messages ride the same
+         trust boundary — capped to the same 200 the history route allows. */
+      messages: (session.messages || []).slice(-200).map((m) => ({
+        _id: m._id,
+        sender: m.sender,
+        text: m.text,
+        senderName: m.senderName,
+        timestamp: m.timestamp,
+      })),
       // Whitelisted: never return the whole autoDelivery sub-document (the
       // schema also holds privateServerUrl).
       autoDelivery: session.autoDelivery
