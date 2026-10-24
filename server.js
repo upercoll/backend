@@ -10,6 +10,12 @@ const PORT = process.env.PORT || 4000;
 async function start() {
   await connectDB();
 
+  // Heal image URLs saved with the old double-slash R2 bug (broken previews
+  // in the admin panel + broken game icons on the store). Idempotent no-op.
+  require("./src/utils/fixDoubleSlashUrls")().catch(err =>
+    logger.error("fixDoubleSlashUrls failed:", err)
+  );
+
   const server = http.createServer(app);
   initSocket(server);
 

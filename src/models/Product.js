@@ -40,6 +40,15 @@ const productSchema = new mongoose.Schema(
     },
     imageUrl: { type: String },
     images: [{ type: String, trim: true }],
+    // How the cover art is shaped so the store can frame the card to the
+    // image instead of squishing everything into one square box, and group
+    // like shapes together in the grid. The admin editor auto-detects it from
+    // the uploaded image; "square" is the safe default for anything older.
+    imageShape: {
+      type: String,
+      enum: ["square", "vertical", "horizontal"],
+      default: "square",
+    },
     features: [{ type: String, trim: true }],
 
     stock: { type: Number, default: -1 },

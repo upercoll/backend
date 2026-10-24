@@ -21,6 +21,13 @@ function parseArrayField(val) {
   return undefined;
 }
 
+// Multipart always delivers strings; anything outside the allowed set falls
+// back to "square" instead of tripping the schema enum into a 500.
+const IMAGE_SHAPES = ["square", "vertical", "horizontal"];
+function sanitizeImageShape(val) {
+  return IMAGE_SHAPES.includes(val) ? val : "square";
+}
+
 // Multipart sends objects/arrays as JSON-encoded strings. Parse them back and
 // drop anything that doesn't match the expected shape.
 function parseJsonField(val) {
@@ -178,6 +185,7 @@ exports.create = catchAsync(async (req, res, next) => {
   if (variations !== undefined) req.body.variations = variations;
   else delete req.body.variations;
   if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
+  req.body.imageShape = sanitizeImageShape(req.body.imageShape);
 
   const product = await Product.create(req.body);
   res.status(201).json({ success: true, data: product });
@@ -193,6 +201,8 @@ exports.update = catchAsync(async (req, res, next) => {
   if ("notice" in req.body) req.body.notice = sanitizeNotice(req.body.notice) || { text: "", required: false };
   if ("variations" in req.body) req.body.variations = sanitizeVariations(req.body.variations) || [];
   if (!req.body.imageUrl && images && images.length) req.body.imageUrl = images[0];
+  // Absent keeps the stored shape; present-but-garbage falls back to square.
+  if ("imageShape" in req.body) req.body.imageShape = sanitizeImageShape(req.body.imageShape);
 
   const product = await Product.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
@@ -292,6 +302,7 @@ exports.bulkCreate = catchAsync(async (req, res, next) => {
       }
       const existing = await Product.findOne({ slug: p.slug });
       if (existing) p.slug = `${p.slug}-${Date.now()}-${i}`;
+      p.imageShape = sanitizeImageShape(p.imageShape);
       const product = await Product.create(p);
       created.push(product);
     } catch (err) {

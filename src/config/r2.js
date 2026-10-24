@@ -15,7 +15,30 @@ const r2 = new S3Client({
 });
 
 const BUCKET = process.env.R2_BUCKET_NAME;
-const PUBLIC_URL = process.env.R2_PUBLIC_URL; // e.g. https://pub-xxx.r2.dev or custom domain
+// e.g. https://pub-xxx.r2.dev or custom domain. The env var is sometimes set
+// with a trailing slash — joining it with `${PUBLIC_URL}/${key}` then produced
+// `https://pub-xxx.r2.dev//rbstars/...`, and R2 serves a 44/404 for that
+// double slash. That's why every image uploaded from the admin panel showed a
+// broken-image "cross" (the URL existed but 404'd) and products saved with no
+// image. Normalize once here so every built URL is single-slashed.
+const PUBLIC_URL = (process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "");
+
+// Collapse any accidental duplicate slashes after the host. The char before
+// the `//` can never be `:` so the protocol's own slashes are untouched.
+// Exported so the boot-time heal in server.js and the controllers can reuse
+// the exact same rule.
+function fixR2Url(url) {
+  return typeof url === "string" ? url.replace(/([^:])\/\//g, "$1/") : url;
+}
+
+// Public URL for an object key. Fails loudly instead of silently producing a
+// broken `undefined/...` link when the env var is missing.
+function buildPublicUrl(key) {
+  if (!PUBLIC_URL) {
+    throw new Error("R2_PUBLIC_URL is not configured — set it in the backend env");
+  }
+  return `${PUBLIC_URL}/${key}`;
+}
 
 // ─── Multer middleware (memory-only, images only, 10MB limit) ─────────────────
 
@@ -54,7 +77,7 @@ async function uploadToR2(buffer, options = {}) {
     })
   );
 
-  const url = `${PUBLIC_URL}/${key}`;
+  const url = buildPublicUrl(key);
 
   return {
     secure_url: url,
@@ -82,4 +105,4 @@ async function deleteFromR2(publicId) {
   }
 }
 
-module.exports = { r2, upload, uploadToR2, deleteFromR2 };
+module.exports = { r2, upload, uploadToR2, deleteFromR2, buildPublicUrl, fixR2Url };
