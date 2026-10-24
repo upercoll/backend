@@ -27,6 +27,10 @@ const PERMISSIONS = [
 
   "manage_promos",
 
+  // Weekly / Monthly raffle draws (tickets from real spend)
+  "view_raffles",
+  "manage_raffles",
+
   "view_claims",
   "claim_agent",
   "monitor_agents",

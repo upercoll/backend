@@ -17,6 +17,11 @@ async function start() {
     logger.info(`RBstars API running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
 
+  // Daily/weekly/monthly raffle rollover sweep — draws whatever period just
+  // closed and opens the next one. The first public /api/raffles hit also
+  // triggers this lazily, so an idle server never pays for it.
+  require("./src/services/raffleService").startRaffleScheduler();
+
   process.on("unhandledRejection", (err) => {
     logger.error("Unhandled rejection:", err);
     server.close(() => process.exit(1));

@@ -32,6 +32,7 @@ const announcementRoutes = require("./routes/announcements");
 const publicSettingsRoutes = require("./routes/settings");
 const publicSiteContentRoutes = require("./routes/siteContentPublic");
 const publicStatsRoutes = require("./routes/publicStats");
+const raffleRoutes = require("./routes/raffles");
 
 const app = express();
 
@@ -95,6 +96,7 @@ app.use("/api/announcements", announcementRoutes);
 app.use("/api/settings", publicSettingsRoutes);
 app.use("/api/site-content", publicSiteContentRoutes);
 app.use("/api/stats", publicStatsRoutes);
+app.use("/api/raffles", raffleRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });

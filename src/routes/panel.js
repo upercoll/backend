@@ -18,6 +18,7 @@ const panelOrdersCtrl = require("../controllers/panelOrdersController");
 const categoryCtrl = require("../controllers/categoryController");
 const productCtrl = require("../controllers/productController");
 const promoCtrl = require("../controllers/promoController");
+const raffleCtrl = require("../controllers/raffleController");
 const settingsCtrl = require("../controllers/settingsController");
 const siteModeCtrl = require("../controllers/siteModeController");
 const stockCtrl = require("../controllers/stockController");
@@ -122,6 +123,21 @@ router.get("/promos", requirePermission("manage_promos"), promoCtrl.getAll);
 router.post("/promos", requirePermission("manage_promos"), promoCtrl.create);
 router.patch("/promos/:id", requirePermission("manage_promos"), promoCtrl.update);
 router.delete("/promos/:id", requirePermission("manage_promos"), promoCtrl.delete);
+
+// ── Raffles (weekly / monthly draws on an admin-set auto schedule). Reads
+// need view_raffles; running a draw or changing settings needs
+// manage_raffles. /settings sits before /:id so it never gets swallowed by
+// the param route.
+router.get("/raffles", requirePermission("view_raffles"), raffleCtrl.adminList);
+router.get("/raffles/settings", requirePermission("view_raffles"), raffleCtrl.adminGetSettings);
+router.patch("/raffles/settings", requirePermission("manage_raffles"), raffleCtrl.adminUpdateSettings);
+router.get("/raffles/summary", requirePermission("view_raffles"), raffleCtrl.adminSummary);
+router.post("/raffles/ensure", requirePermission("manage_raffles"), raffleCtrl.adminEnsure);
+router.get("/raffles/:id", requirePermission("view_raffles"), raffleCtrl.adminGetDraw);
+router.post("/raffles/:id/draw", requirePermission("manage_raffles"), raffleCtrl.adminDrawNow);
+router.post("/raffles/:id/winners", requirePermission("manage_raffles"), raffleCtrl.adminAddWinner);
+router.delete("/raffles/:id/winners/:email", requirePermission("manage_raffles"), raffleCtrl.adminRemoveWinner);
+router.post("/raffles/:id/void", requirePermission("manage_raffles"), raffleCtrl.adminVoid);
 
 const canUpload = (req, res, next) => {
   if (req.panelUser?.isOwner) return next();
